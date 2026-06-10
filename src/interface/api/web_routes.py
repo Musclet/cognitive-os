@@ -3389,6 +3389,288 @@ async def web_actions_undo(request: Request, body: dict):
     }
 
 
+# ── Cognitive action tier recommendation (auth required) ────────────────────────
+
+
+@router.get("/api/web/cognitive/recommendation")
+async def web_cognitive_recommendation(request: Request):
+    """Return action-tier recommendations based on current workload/pressure."""
+    _require_session(request)
+    state_engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
+    if not state_engine:
+        return JSONResponse(status_code=503, content={"ok": False, "message": "state engine not available"})
+
+    try:
+        derived = getattr(state_engine, "_derived", {})
+        workload = derived.get("workload_density", {}).get("score", 0) if isinstance(derived, dict) else 0
+        pressure = derived.get("deadline_pressure", {}).get("score", 0) if isinstance(derived, dict) else 0
+        energy_level = max(0.0, 1.0 - max(workload, pressure))
+
+        if energy_level > 0.7:
+            tier = "超额模式"; actions = ["完成全部训练容量", "专注深度工作 90 分钟", "处理本周所有待办"]
+        elif energy_level > 0.35:
+            tier = "标准模式"; actions = ["完成核心训练", "处理 3 项高优任务", "画画 30 分钟"]
+        else:
+            tier = "最低启动"; actions = ["只做 1 组轻量训练", f"别想了，现在马上去休息 {15 if energy_level < 0.15 else 10} 分钟", "补水 500ml"]
+
+        return {
+            "ok": True,
+            "energy_level": round(energy_level, 2),
+            "workload_score": round(workload, 2),
+            "deadline_pressure": round(pressure, 2),
+            "tier": tier,
+            "actions": actions,
+        }
+    except Exception as exc:
+        logger.exception("cognitive recommendation failed")
+        return JSONResponse(status_code=500, content={"ok": False, "message": f"推荐生成失败: {exc}"})
+
+
+# ── Desktop bridge stub (auth required) ─────────────────────────────────────────
+
+
+@router.get("/api/web/desktop/status")
+async def web_desktop_status(request: Request):
+    """Stub for future local desktop bridge integration."""
+    _require_session(request)
+    return {
+        "ok": True,
+        "status": "unavailable",
+        "message": "Desktop bridge requires a local Python assistant process (M9)",
+    }
+
+
+# ── JWXT schedule sync (auth required) ──────────────────────────────────────────
+
+
+@router.post("/api/web/sync/jwxt")
+async def web_sync_jwxt(request: Request):
+    """Trigger a JWXT schedule sync. Requires valid session."""
+    _require_session(request)
+    pipeline: Pipeline | None = getattr(request.app.state, "pipeline", None)
+    if pipeline is None:
+        return JSONResponse(status_code=503, content={"ok": False, "message": "pipeline not available"})
+
+    user_id = _web_user_id(request)
+    trace_id = str(uuid4())
+    event = Event(
+        event_type=EventType.CONNECTOR_FETCH_REQUESTED,
+        aggregate_id="jwxt",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "jwxt", "query": "weekly_schedule", "intent": "manual_sync"},
+        metadata=_web_event_metadata(user_id, trace_id),
+    )
+    try:
+        produced = await pipeline.run(event)
+        block_count = sum(1 for e in produced if e.event_type == EventType.TEMPORAL_BLOCK_ADDED)
+        failed = any(e.event_type == EventType.CONNECTOR_FETCH_FAILED for e in produced)
+        if failed:
+            err = ""
+            for e in produced:
+                if e.event_type == EventType.CONNECTOR_FETCH_FAILED:
+                    err = e.payload.get("error", "unknown")
+                    break
+            return {"ok": False, "message": f"同步失败: {err}", "count": 0, "events": len(produced)}
+        return {"ok": True, "message": f"课表同步完成，新增 {block_count} 个课程", "count": block_count, "events": len(produced)}
+    except Exception as exc:
+        logger.exception("jwxt sync failed")
+        return {"ok": False, "message": f"同步异常: {exc}", "count": 0, "events": 0}
+
+
+@router.post("/api/web/sync/jwxt/raw")
+async def web_sync_jwxt_raw(request: Request):
+    """Accept raw JWXT API response for manual schedule import.
+
+    Body: {"kbList": [...]}
+
+    Useful when the automated connector cannot log in (CAPTCHA, VPN
+    required).  The user copies the kbList array from the browserʼs
+    DevTools Network tab and pastes it here.
+    """
+    _require_session(request)
+    pipeline: Pipeline | None = getattr(request.app.state, "pipeline", None)
+    if pipeline is None:
+        return JSONResponse(status_code=503, content={"ok": False, "message": "pipeline not available"})
+
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"ok": False, "message": "body must be valid JSON"})
+
+    kb_list = body.get("kbList", body.get("kb_list", body.get("data", [])))
+    if not isinstance(kb_list, list) or not kb_list:
+        return JSONResponse(status_code=400, content={"ok": False, "message": "kbList field is required (JSON array)"})
+
+    user_id = _web_user_id(request)
+    trace_id = str(uuid4())
+
+    try:
+        from src.connector.jwxt.client import JwxtConnector
+        connector = JwxtConnector(settings=_settings(request))
+        blocks = connector.parse_kb_list(kb_list)
+        if not blocks:
+            return {"ok": False, "message": "未解析到任何课程", "count": 0}
+
+        published = 0
+        for block_dict in blocks:
+            evt = Event(
+                event_type=EventType.TEMPORAL_BLOCK_ADDED,
+                aggregate_id=block_dict.get("block_id", str(uuid4())[:8]),
+                aggregate_type=AggregateType.TEMPORAL,
+                payload=block_dict,
+                metadata=_web_event_metadata(user_id, trace_id),
+            )
+            await pipeline.run(evt)
+            published += 1
+
+        return {"ok": True, "message": f"手动导入 {len(blocks)} 个课程", "count": len(blocks), "events": published}
+    except Exception as exc:
+        logger.exception("jwxt raw import failed")
+        return {"ok": False, "message": f"解析失败: {exc}", "count": 0, "events": 0}
+
+
+# ── Worker heartbeat status (auth required) ─────────────────────────────────────
+
+
+@router.get("/api/web/worker/heartbeat_status")
+async def web_worker_heartbeat_status(request: Request):
+    """Return the latest worker heartbeat from the EventStore."""
+    _require_session(request)
+
+    event_store = getattr(request.app.state, "event_store", None)
+    if not event_store or not hasattr(event_store, "get_recent"):
+        return JSONResponse(status_code=503, content={"ok": False, "message": "event store not available"})
+
+    now_utc = datetime.now(timezone.utc)
+    worker_heartbeats: list[dict[str, Any]] = []
+    latest_ts: datetime | None = None
+    latest_payload: dict[str, Any] = {}
+
+    try:
+        recent = await event_store.get_recent(100)
+        for evt in recent:
+            if evt.event_type == EventType.SYSTEM_RUNTIME_HEARTBEAT and (evt.metadata or {}).get("source") == "worker":
+                ts = evt.timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                worker_heartbeats.append({
+                    "timestamp": ts.isoformat(),
+                    "emit_count": evt.payload.get("emit_count", 0),
+                    "uptime_s": evt.payload.get("uptime_s", 0),
+                    "last_sync_status": evt.payload.get("last_sync_status", ""),
+                    "last_sync_count": evt.payload.get("last_sync_count", 0),
+                })
+                if latest_ts is None or ts > latest_ts:
+                    latest_ts = ts
+                    latest_payload = evt.payload
+
+        if latest_ts is not None:
+            age_s = int((now_utc - latest_ts).total_seconds())
+            if age_s <= 60:
+                status = "alive"
+            elif age_s <= 300:
+                status = "stale"
+            else:
+                status = "dead"
+            return {
+                "ok": True,
+                "status": status,
+                "last_heartbeat": latest_ts.isoformat(),
+                "seconds_since_heartbeat": age_s,
+                "emit_count": latest_payload.get("emit_count", 0),
+                "uptime_s": latest_payload.get("uptime_s", 0),
+                "last_sync_status": latest_payload.get("last_sync_status", ""),
+                "last_sync_count": latest_payload.get("last_sync_count", 0),
+                "total_heartbeats_in_window": len(worker_heartbeats),
+            }
+        return {
+            "ok": True,
+            "status": "missing",
+            "last_heartbeat": None,
+            "seconds_since_heartbeat": None,
+            "emit_count": 0,
+            "uptime_s": 0,
+            "last_sync_status": "never",
+            "last_sync_count": 0,
+            "total_heartbeats_in_window": 0,
+        }
+    except Exception:
+        logger.exception("worker heartbeat status query failed")
+        return JSONResponse(status_code=500, content={"ok": False, "message": "heartbeat query failed"})
+
+
+# ── Google Calendar live probe (auth required, no secrets) ─────────────────────
+
+
+@router.get("/api/web/sync/google-calendar/probe")
+async def web_sync_google_calendar_probe(request: Request):
+    """Check real Google API connectivity without performing a full sync.
+
+    Requires valid session.  Returns structured probe result — never
+    leaks token content or credentials.
+    """
+    _require_session(request)
+
+    from src.connector.google_calendar.client import GoogleCalendarConnector
+    connector = GoogleCalendarConnector(settings=_settings(request))
+
+    try:
+        result = await connector.probe_live_connection()
+    except Exception as exc:
+        result = {"status": "FAIL", "reason": f"ERR_PROBE_EXCEPTION: {exc}"}
+
+    return {"ok": result["status"] == "PASS" or result["status"] == "SKIPPED",
+            **result}
+
+
+# ── Google Calendar real sync (probe-gated, auth required) ──────────────────────
+
+
+@router.post("/api/web/sync/google-calendar/execute")
+async def web_sync_google_calendar_execute(request: Request):
+    """Probe-gated real read-only Google Calendar sync.
+
+    The probe MUST pass before real API calls are attempted.  If the
+    probe fails the endpoint returns 200 with ``"status": "DEGRADED"``
+    so the frontend never sees a crash.
+    """
+    _require_session(request)
+
+    pipeline: Pipeline | None = getattr(request.app.state, "pipeline", None)
+    if pipeline is None:
+        return JSONResponse(status_code=503, content={"ok": False, "message": "pipeline not available"})
+
+    from src.connector.google_calendar.client import GoogleCalendarConnector
+    connector = GoogleCalendarConnector(settings=_settings(request))
+
+    user_id = _web_user_id(request)
+    trace_id = str(uuid4())
+
+    try:
+        result, events = await connector.execute_real_readonly_sync(
+            causation_id=trace_id, trace_id=trace_id,
+        )
+
+        # Publish produced events through the pipeline so StateEngine applies them
+        for evt in events:
+            await pipeline.run(evt)
+
+        return {
+            **result,
+            "events_published": len(events),
+        }
+    except Exception as exc:
+        logger.exception("google calendar real sync failed")
+        return {
+            "ok": False,
+            "status": "EXCEPTION",
+            "message": f"Real sync crashed: {exc}",
+            "count": 0,
+            "events_published": 0,
+        }
+
+
 # ── Google Calendar diagnostics (auth required, no secrets) ────────────────────
 
 

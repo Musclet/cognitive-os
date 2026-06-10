@@ -498,3 +498,20 @@ export interface GoogleCalendarDiagnostics {
 export async function getGoogleCalendarDiagnostics(): Promise<GoogleCalendarDiagnostics> {
   return request<GoogleCalendarDiagnostics>('/api/web/diagnostics/google-calendar');
 }
+
+export async function syncJwxt(): Promise<SyncCalendarResponse> {
+  return request<SyncCalendarResponse>('/api/web/sync/jwxt', { method: 'POST' });
+}
+
+export interface CognitiveRecommendation {
+  ok: boolean;
+  energy_level: number;
+  workload_score: number;
+  deadline_pressure: number;
+  tier: string;
+  actions: string[];
+}
+
+export async function getCognitiveRecommendation(): Promise<CognitiveRecommendation> {
+  return request<CognitiveRecommendation>('/api/web/cognitive/recommendation');
+}

@@ -226,6 +226,128 @@ class GoogleCalendarConnector(Connector):
             ))
             return out
 
+    async def probe_live_connection(self) -> dict[str, Any]:
+        """Lightweight connectivity check against the real Google API.
+
+        Never throws — every error path returns a structured dict.
+        Uses a 3-second timeout so a slow network cannot block the caller.
+        """
+        if self.settings.google_calendar_mock:
+            return {"status": "SKIPPED", "reason": "MOCK_ENABLED"}
+
+        import os as _os
+        creds_env = bool(str(getattr(self.settings, "google_calendar_credentials_json", "")))
+        token_env = bool(str(getattr(self.settings, "google_calendar_token_json", "")))
+        creds_file = _os.path.isfile(str(self.settings.google_calendar_credentials_path))
+        token_file = _os.path.isfile(str(self.settings.google_calendar_token_path))
+        if not (creds_env or creds_file) and not (token_env or token_file):
+            return {"status": "FAIL", "reason": "ERR_NO_CREDENTIALS"}
+
+        try:
+            ok = await self.authenticate()
+            if not ok or not self._creds:
+                return {"status": "FAIL", "reason": "ERR_AUTH_FAILED"}
+        except Exception as exc:
+            return {"status": "FAIL", "reason": f"ERR_AUTH_EXCEPTION: {exc}"}
+
+        try:
+            from googleapiclient.discovery import build as _build
+            import asyncio as _asyncio
+            service = _build("calendar", "v3", credentials=self._creds, cache_discovery=False)
+            result = await _asyncio.wait_for(
+                _asyncio.to_thread(
+                    lambda: service.calendarList().list(maxResults=1, fields="items(id,summary)").execute(),
+                ),
+                timeout=3.0,
+            )
+            items = result.get("items", [])
+            cal_id = items[0].get("id", "?") if items else "none"
+            return {"status": "PASS", "calendar_count": len(items), "sample_calendar_id": cal_id}
+        except _asyncio.TimeoutError:
+            return {"status": "FAIL", "reason": "ERR_TIMEOUT_3S"}
+        except Exception as exc:
+            msg = str(exc)
+            if "invalid_grant" in msg.lower():
+                return {"status": "FAIL", "reason": "ERR_INVALID_GRANT"}
+            if "insufficient" in msg.lower() or "permission" in msg.lower():
+                return {"status": "FAIL", "reason": "ERR_INSUFFICIENT_PERMISSIONS"}
+            if "not found" in msg.lower():
+                return {"status": "FAIL", "reason": "ERR_CALENDAR_NOT_FOUND"}
+            return {"status": "FAIL", "reason": f"ERR_API: {msg[:120]}"}
+
+    async def execute_real_readonly_sync(self, causation_id: str = "", trace_id: str = "") -> tuple[dict[str, Any], list[Event]]:
+        """Run a probe-gated real read-only sync against Google Calendar.
+
+        Returns (result_dict, produced_events).  If the probe fails the
+        result dict carries ``"status": "DEGRADED"`` so callers can
+        return 200 with a clear message instead of crashing.
+        """
+        probe = await self.probe_live_connection()
+        if probe["status"] != "PASS":
+            return {
+                "ok": True,
+                "status": "DEGRADED",
+                "message": f"Real sync blocked — probe {probe['status']}: {probe.get('reason','')}",
+                "count": 0,
+                "probe": probe,
+            }, []
+
+        # Probe passed — run the normal fetch pipeline
+        params: dict[str, Any] = {
+            "source": self.source_name,
+            "query": "calendar_events",
+            "intent": "real_readonly_sync",
+            "calendar_id": self.settings.google_calendar_calendar_id,
+            "sync_window_days": self.settings.google_calendar_sync_window_days,
+        }
+        data, auth_events = await self.fetch_with_auth_events(params)
+
+        produced: list[Event] = list(auth_events)
+
+        started = time.monotonic()
+        for block in data.get("blocks", []):
+            status = block.get("metadata", {}).get("status", "")
+            event_type = EventType.TEMPORAL_BLOCK_ADDED
+            if status == "cancelled":
+                event_type = EventType.TEMPORAL_BLOCK_CANCELLED
+            elif block.get("metadata", {}).get("updated_existing"):
+                event_type = EventType.TEMPORAL_BLOCK_UPDATED
+            produced.append(Event(
+                event_type=event_type,
+                aggregate_id=block["block_id"],
+                aggregate_type=AggregateType.TEMPORAL,
+                causation_id=causation_id,
+                payload=block,
+                metadata={
+                    "trace_id": trace_id,
+                    "source": self.source_name,
+                    "calendar_id": data.get("calendar_id", self.settings.google_calendar_calendar_id),
+                    "dedup_key": block.get("metadata", {}).get("dedup_key", ""),
+                },
+            ))
+
+        produced.append(Event(
+            event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+            aggregate_id=self.source_name,
+            aggregate_type=AggregateType.SYSTEM,
+            causation_id=causation_id,
+            payload=data,
+            metadata={
+                "trace_id": trace_id,
+                "source": self.source_name,
+                "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                "item_count": data.get("count", 0),
+            },
+        ))
+
+        return {
+            "ok": True,
+            "status": "SUCCESS",
+            "message": f"Real sync completed — {data.get('count', 0)} events",
+            "count": data.get("count", 0),
+            "probe": probe,
+        }, produced
+
 
 def _keyword_kind(title: str, description: str) -> TimeBlockType:
     hay = f"{title} {description}".lower()

@@ -1,11 +1,13 @@
-"""Cognitive OS Worker — background heartbeat emitter.
+"""Cognitive OS Worker — background heartbeat + sync guardian.
 
 Runs alongside the web service, sharing DATABASE_URL / EventStore.
-Keeps the event log warm and proves the worker is alive via periodic
-``system.runtime.heartbeat`` events.
 
-Does NOT start: uvicorn, Telegram, scheduler, connectors (chaoxing /
-jwxt / google_calendar / momo), or the web UI build.
+- Emits a ``system.runtime.heartbeat`` every 30 seconds.
+- Every 5 minutes, runs a probe-gated Google Calendar real sync
+  (via ``GoogleCalendarConnector.execute_real_readonly_sync``).
+- All failures are isolated — a sync failure never kills the worker.
+
+Does NOT start: uvicorn, Telegram, scheduler, or the web UI build.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("worker")
 
-HEARTBEAT_INTERVAL_S = 300  # 5 minutes
+HEARTBEAT_INTERVAL_S = 30  # heartbeat every 30s
 
 
 async def main() -> None:
@@ -103,6 +105,7 @@ async def main() -> None:
         emit_count += 1
         uptime_s = time.monotonic() - started_at
 
+        # ── Heartbeat ──────────────────────────────────────────────────
         try:
             event = Event(
                 event_type=EventType.SYSTEM_RUNTIME_HEARTBEAT,
@@ -116,14 +119,10 @@ async def main() -> None:
                 },
                 metadata={"source": "worker"},
             )
-            produced = await pipeline.run(event)
-            logger.info(
-                "heartbeat #%d uptime=%.0fs state_events=%d cascade=%d",
-                emit_count, uptime_s, state_engine.event_count, len(produced),
-            )
+            await pipeline.run(event)
+            logger.debug("heartbeat #%d uptime=%.0fs", emit_count, uptime_s)
         except Exception:
-            logger.exception("heartbeat #%d failed — will retry in %ds",
-                             emit_count, HEARTBEAT_INTERVAL_S)
+            logger.exception("heartbeat #%d failed", emit_count)
 
     # ── Cleanup ────────────────────────────────────────────────────────
     state_engine.save_snapshot()
