@@ -1,0 +1,54 @@
+{
+  "name": "Cognitive OS",
+  "short_name": "CogOS",
+  "description": "Personal cognitive operating system — manage homework, schedule, fitness, finance, and daily reviews",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#2d1b2e",
+  "theme_color": "#2d1b2e",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "/app/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/app/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "lifestyle", "education"],
+  "shortcuts": [
+    {
+      "name": "总览",
+      "short_name": "总览",
+      "description": "查看仪表盘",
+      "url": "/app/",
+      "icons": [{ "src": "/app/icon-192.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "任务",
+      "short_name": "任务",
+      "description": "管理作业任务",
+      "url": "/app/tasks",
+      "icons": [{ "src": "/app/icon-192.svg", "sizes": "192x192" }]
+    },
+    {
+      "name": "时间线",
+      "short_name": "时间线",
+      "description": "查看日程安排",
+      "url": "/app/timeline",
+      "icons": [{ "src": "/app/icon-192.svg", "sizes": "192x192" }]
+    }
+  ],
+  "related_applications": [],
+  "prefer_related_applications": false
+}

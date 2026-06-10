@@ -1,0 +1,56 @@
+services:
+  - type: web
+    name: cognitive-os
+    runtime: python
+    repo: https://github.com/Musclet/cognitive-os
+    branch: master
+    buildCommand: pip install -e . && cd web && npm install && npm run build && cd ..
+    startCommand: python scripts/render_run.py
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SNAPSHOT_PATH
+        value: data/state_snapshot.json
+      - key: WEB_UI_PIN
+        sync: false
+      - key: WEB_UI_SESSION_SECRET
+        generateValue: true
+      - key: WEB_UI_COOKIE_SECURE
+        value: "true"
+      - key: INSPECTOR_ADMIN_TOKEN
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: "https://cognitive-os.onrender.com"
+      - key: GOOGLE_CALENDAR_MOCK
+        value: "true"
+      - key: CHAOXING_MOCK
+        value: "true"
+      - key: JWXT_MOCK
+        value: "true"
+      - key: MOMO_SYNC_ENABLED
+        value: "false"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+
+  - type: worker
+    name: cognitive-os-worker
+    runtime: python
+    repo: https://github.com/Musclet/cognitive-os
+    branch: master
+    buildCommand: pip install -e .
+    startCommand: python scripts/worker_run.py
+    plan: free
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SNAPSHOT_PATH
+        value: data/state_snapshot.json
+      - key: GOOGLE_CALENDAR_MOCK
+        value: "true"
+      - key: CHAOXING_MOCK
+        value: "true"
+      - key: JWXT_MOCK
+        value: "true"
+      - key: MOMO_SYNC_ENABLED
+        value: "false"

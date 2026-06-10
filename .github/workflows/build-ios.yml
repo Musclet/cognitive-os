@@ -1,0 +1,57 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/build-ios.yml'
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: List schemes
+        run: |
+          cd ios
+          xcodebuild -list -project "Cognitive OS.xcodeproj"
+
+      - name: Build app unsigned
+        run: |
+          cd ios
+          xcodebuild \
+            -project "Cognitive OS.xcodeproj" \
+            -scheme "Cognitive OS" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build
+
+      - name: Create IPA
+        run: |
+          cd ios
+          APP=$(find build/Build/Products/Release-iphoneos -name "*.app" -maxdepth 2 | head -1)
+          echo "App found: $APP"
+          test -n "$APP"
+          rm -rf Payload
+          mkdir Payload
+          cp -R "$APP" Payload/
+          zip -r CognitiveOS.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CognitiveOS-iOS-unsigned
+          path: ios/CognitiveOS.ipa
+          retention-days: 7

@@ -1,0 +1,2 @@
+"""Daily review domain."""
+
