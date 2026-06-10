@@ -349,6 +349,33 @@ export interface SystemActionResponse {
   dashboard?: DashboardData;
 }
 
+export interface WebStatus {
+  ok: boolean;
+  event_count: number;
+  state_event_count: number;
+  state_hash: string;
+  bus_subscribers: Record<string, number>;
+  settings: {
+    chaoxing_mock: boolean;
+    jwxt_mock: boolean;
+    google_calendar_mock: boolean;
+    momo_sync_enabled: boolean;
+    obsidian_vault_configured: boolean;
+    database_url_type: string;
+  };
+  worker?: {
+    status: 'alive' | 'stale' | 'missing';
+    last_heartbeat?: string;
+    seconds_since_heartbeat?: number;
+  };
+  sync_health?: Record<string, {
+    status: string;
+    last_sync?: string;
+    count?: number;
+    error?: string;
+  }>;
+}
+
 export async function postSystemAction(action: SystemAction): Promise<SystemActionResponse> {
   return request<SystemActionResponse>('/api/web/system/action', {
     method: 'POST',
@@ -435,4 +462,39 @@ export async function deleteExercise(dateStr: string, exerciseIndex: number): Pr
     method: 'POST',
     body: JSON.stringify({ date: dateStr, exercise_index: exerciseIndex }),
   });
+}
+
+export async function getWebStatus(): Promise<WebStatus> {
+  return request<WebStatus>('/api/web/status');
+}
+
+export interface SyncCalendarResponse {
+  ok: boolean;
+  message: string;
+  count: number;
+  events: number;
+}
+
+export async function syncGoogleCalendar(): Promise<SyncCalendarResponse> {
+  return request<SyncCalendarResponse>('/api/web/sync/google-calendar', { method: 'POST' });
+}
+
+export interface GoogleCalendarDiagnostics {
+  ok: boolean;
+  mock: boolean;
+  write_enabled: boolean;
+  credentials_path_configured: boolean;
+  credentials_file_exists: boolean;
+  credentials_env_configured: boolean;
+  token_path_configured: boolean;
+  token_file_exists: boolean;
+  token_env_configured: boolean;
+  calendar_id_configured: boolean;
+  timezone: string;
+  ready_for_real_sync: boolean;
+  missing: string[];
+}
+
+export async function getGoogleCalendarDiagnostics(): Promise<GoogleCalendarDiagnostics> {
+  return request<GoogleCalendarDiagnostics>('/api/web/diagnostics/google-calendar');
 }

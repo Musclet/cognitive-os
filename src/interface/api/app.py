@@ -9,7 +9,7 @@ import logging
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.storage.event_store import EventStore
@@ -80,6 +80,11 @@ def create_app(
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
+
+    # ── Root redirect to Web UI ────────────────────────────────────────
+    @app.get("/", include_in_schema=False)
+    async def root_redirect():
+        return RedirectResponse("/app")
 
     # ── Inspector API admin auth middleware ────────────────────────────
     @app.middleware("http")

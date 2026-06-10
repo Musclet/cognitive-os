@@ -48,6 +48,7 @@ HEARTBEAT_INTERVAL_S = 300  # 5 minutes
 async def main() -> None:
     settings = Settings()
     settings.ensure_dirs()
+    settings.apply_env_google_credentials()
 
     logger.info("worker starting — db=%s snapshot=%s",
                 "postgres" if settings.database_url.startswith("postgresql") else "sqlite",

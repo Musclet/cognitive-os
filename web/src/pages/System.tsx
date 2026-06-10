@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import {
-  getDashboard, getRecentActions, postUndo, postSystemAction,
-  DashboardData, RecentAction, SystemAction,
+  getDashboard, getRecentActions, postUndo, postSystemAction, getWebStatus, syncGoogleCalendar,
+  getGoogleCalendarDiagnostics,
+  DashboardData, RecentAction, SystemAction, WebStatus, GoogleCalendarDiagnostics,
 } from '../api'
 import { announceWebAction, refreshDashboard } from '../events'
 
@@ -31,10 +32,22 @@ export function SystemPage({ onAction }: Props) {
   const [actionStatus, setActionStatus] = useState('')
   const [busySystemAction, setBusySystemAction] = useState('')
   const [systemStatus, setSystemStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+  const [webStatus, setWebStatus] = useState<WebStatus | null>(null)
+  const [webStatusError, setWebStatusError] = useState('')
+  const [syncingCalendar, setSyncingCalendar] = useState(false)
+  const [syncCalResult, setSyncCalResult] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
+  const [gcalDiag, setGcalDiag] = useState<GoogleCalendarDiagnostics | null>(null)
+  const [gcalDiagErr, setGcalDiagErr] = useState('')
 
   const load = () => {
     getDashboard().then(setData).catch(() => {})
     getRecentActions(12).then(res => setRecentActions(res.actions || [])).catch(() => {})
+    getWebStatus()
+      .then(s => { setWebStatus(s); setWebStatusError('') })
+      .catch((err: any) => { setWebStatusError(err.detail || err.message || '状态获取失败') })
+    getGoogleCalendarDiagnostics()
+      .then(d => { setGcalDiag(d); setGcalDiagErr('') })
+      .catch((err: any) => { setGcalDiagErr(err.detail || err.message || '诊断获取失败') })
   }
 
   useEffect(() => {
@@ -99,6 +112,21 @@ export function SystemPage({ onAction }: Props) {
     }
   }
 
+  const handleSyncCalendar = async () => {
+    setSyncingCalendar(true)
+    setSyncCalResult(null)
+    try {
+      const res = await syncGoogleCalendar()
+      setSyncCalResult({ type: res.ok ? 'ok' : 'err', text: res.message })
+      load()
+    } catch (err: any) {
+      setSyncCalResult({ type: 'err', text: err.detail || err.message || '同步请求失败' })
+    } finally {
+      setSyncingCalendar(false)
+      setTimeout(() => setSyncCalResult(null), 5000)
+    }
+  }
+
   if (!data) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-dim)' }}>加载中...</div>
 
   const syncHealth = data.sync_health ?? {}
@@ -152,6 +180,86 @@ export function SystemPage({ onAction }: Props) {
             <SystemButton action="sync_calendar" label="同步日历" busy={busySystemAction} onClick={runSystemAction} />
             <SystemButton action="sync_vocab" label="同步背词" busy={busySystemAction} onClick={runSystemAction} />
           </div>
+          <div style={{ marginTop: 8, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 8 }}>
+            <button
+              className="system-action-btn primary"
+              disabled={syncingCalendar}
+              onClick={handleSyncCalendar}
+              style={{ width: '100%' }}
+            >
+              {syncingCalendar ? '同步中...' : '同步 Google Calendar'}
+            </button>
+            {syncCalResult && (
+              <div style={{
+                marginTop: 6, fontSize: 12, fontWeight: 600,
+                color: syncCalResult.type === 'ok' ? 'var(--accent-green)' : 'var(--danger)',
+              }}>
+                {syncCalResult.text}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="card system-control-card">
+          <div className="system-control-head">
+            <div>
+              <div className="system-kicker">Google Calendar 诊断</div>
+              <h3>同步就绪检查</h3>
+            </div>
+            <span className={`system-pill ${gcalDiag?.ready_for_real_sync ? 'ok' : (gcalDiag ? 'warn' : 'warn')}`}>
+              {gcalDiag ? (gcalDiag.ready_for_real_sync ? '就绪' : '未就绪') : '...'}
+            </span>
+          </div>
+          {gcalDiagErr && (
+            <div style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 8 }}>{gcalDiagErr}</div>
+          )}
+          {gcalDiag ? (
+            <div style={{ fontSize: 12 }}>
+              <div className="stat-row">
+                <span className="label">Mock 模式</span>
+                <span className="value">{gcalDiag.mock ? '开启' : '关闭'}</span>
+              </div>
+              <div className="stat-row">
+                <span className="label">写入</span>
+                <span className="value">{gcalDiag.write_enabled ? '启用' : '停用'}</span>
+              </div>
+              <div className="stat-row">
+                <span className="label">Credentials 文件</span>
+                <span className="value" style={{ color: gcalDiag.credentials_file_exists ? 'var(--accent-green)' : 'var(--text-dim)' }}>
+                  {gcalDiag.credentials_file_exists ? '存在' : gcalDiag.credentials_path_configured ? '缺失' : '未配置'}
+                </span>
+              </div>
+              <div className="stat-row">
+                <span className="label">Credentials ENV</span>
+                <span className="value" style={{ color: gcalDiag.credentials_env_configured ? 'var(--accent-green)' : 'var(--text-dim)' }}>
+                  {gcalDiag.credentials_env_configured ? '已配置' : '未配置'}
+                </span>
+              </div>
+              <div className="stat-row">
+                <span className="label">Token 文件</span>
+                <span className="value" style={{ color: gcalDiag.token_file_exists ? 'var(--accent-green)' : 'var(--text-dim)' }}>
+                  {gcalDiag.token_file_exists ? '存在' : gcalDiag.token_path_configured ? '缺失' : '未配置'}
+                </span>
+              </div>
+              <div className="stat-row">
+                <span className="label">Token ENV</span>
+                <span className="value" style={{ color: gcalDiag.token_env_configured ? 'var(--accent-green)' : 'var(--text-dim)' }}>
+                  {gcalDiag.token_env_configured ? '已配置' : '未配置'}
+                </span>
+              </div>
+              <div className="stat-row">
+                <span className="label">时区</span>
+                <span className="value">{gcalDiag.timezone}</span>
+              </div>
+              {gcalDiag.missing.length > 0 && (
+                <div style={{ marginTop: 8, color: 'var(--accent-gold)', fontSize: 11 }}>
+                  缺少: {gcalDiag.missing.join(', ')}
+                </div>
+              )}
+            </div>
+          ) : (
+            !gcalDiagErr && <div style={{ fontSize: 12, color: 'var(--text-dim)' }}>加载中...</div>
+          )}
         </div>
 
         <div className="card system-control-card">
@@ -224,6 +332,94 @@ export function SystemPage({ onAction }: Props) {
           <span className="value">{data.homework_count} 项</span>
         </div>
       </div>
+
+      <div className="section-label" style={{ margin: '20px 0 8px' }}>系统状态</div>
+      {webStatusError && (
+        <div className="system-action-status err" style={{ marginBottom: 12 }}>{webStatusError}</div>
+      )}
+      {webStatus ? (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div className="stat-row">
+            <span className="label">事件总数</span>
+            <span className="value">{webStatus.event_count}</span>
+          </div>
+          <div className="stat-row">
+            <span className="label">StateEngine 事件</span>
+            <span className="value">{webStatus.state_event_count}</span>
+          </div>
+          <div className="stat-row">
+            <span className="label">State Hash</span>
+            <span className="value" style={{ fontFamily: 'monospace', fontSize: 11 }}>
+              {webStatus.state_hash ? webStatus.state_hash.slice(0, 8) : '—'}…
+            </span>
+          </div>
+          <div className="stat-row">
+            <span className="label">Bus 订阅类型</span>
+            <span className="value">{Object.keys(webStatus.bus_subscribers || {}).length}</span>
+          </div>
+          <div className="stat-row">
+            <span className="label">数据库类型</span>
+            <span className="value">{webStatus.settings.database_url_type}</span>
+          </div>
+          <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+            <div className="stat-row">
+              <span className="label">超星 Mock</span>
+              <span className="value">{webStatus.settings.chaoxing_mock ? '是' : '否'}</span>
+            </div>
+            <div className="stat-row">
+              <span className="label">教务 Mock</span>
+              <span className="value">{webStatus.settings.jwxt_mock ? '是' : '否'}</span>
+            </div>
+            <div className="stat-row">
+              <span className="label">日历 Mock</span>
+              <span className="value">{webStatus.settings.google_calendar_mock ? '是' : '否'}</span>
+            </div>
+            <div className="stat-row">
+              <span className="label">Momo 同步</span>
+              <span className="value">{webStatus.settings.momo_sync_enabled ? '启用' : '停用'}</span>
+            </div>
+            <div className="stat-row">
+              <span className="label">Obsidian</span>
+              <span className="value">{webStatus.settings.obsidian_vault_configured ? '已配置' : '未配置'}</span>
+            </div>
+          </div>
+          {webStatus.worker && (
+            <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
+              <div className="stat-row">
+                <span className="label">Worker 状态</span>
+                <span className="value" style={{
+                  color: webStatus.worker.status === 'alive' ? 'var(--accent-green)'
+                       : webStatus.worker.status === 'stale' ? 'var(--accent-gold)'
+                       : 'var(--text-dim)'
+                }}>
+                  {webStatus.worker.status === 'alive' ? '活跃'
+                   : webStatus.worker.status === 'stale' ? '延迟'
+                   : '离线'}
+                </span>
+              </div>
+              {webStatus.worker.last_heartbeat && (
+                <div className="stat-row">
+                  <span className="label">最后心跳</span>
+                  <span className="value" style={{ fontSize: 11 }}>
+                    {new Date(webStatus.worker.last_heartbeat).toLocaleString('zh-CN', {
+                      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+                    })}
+                    {webStatus.worker.seconds_since_heartbeat != null && (
+                      <span style={{ marginLeft: 6, color: 'var(--text-dim)' }}>
+                        ({webStatus.worker.seconds_since_heartbeat}s 前)
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        !webStatusError && (
+          <div style={{ fontSize: 13, color: 'var(--text-dim)', padding: '16px 0' }}>加载中...</div>
+        )
+      )}
 
       <div className="section-label" style={{ margin: '20px 0 8px' }}>最近操作</div>
       <div className="card recent-actions-card">

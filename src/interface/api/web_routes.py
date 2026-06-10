@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import secrets
 from base64 import b64decode, b64encode
@@ -297,7 +298,7 @@ def _build_dashboard(state_engine: StateEngine | None, settings: Any) -> dict[st
     elif isinstance(temporal_blocks, list):
         blocks_today = temporal_blocks
 
-    # Calendar events
+    # Calendar events — merge legacy calendar state + Google Calendar temporal blocks
     calendar_raw = _safe_get(state, "calendar", {})
     calendar_events_today = []
     cal_day = calendar_raw.get(today.isoformat(), [])
@@ -308,7 +309,37 @@ def _build_dashboard(state_engine: StateEngine | None, settings: Any) -> dict[st
                     "summary": ev.get("summary", ""),
                     "start": ev.get("start", ev.get("start_time", "")),
                     "end": ev.get("end", ev.get("end_time", "")),
+                    "source": "legacy",
                 })
+
+    # Merge Google Calendar temporal blocks for today
+    if state_engine is not None:
+        try:
+            all_blocks = state_engine.get_temporal_blocks()
+            for block in all_blocks:
+                bd = getattr(block, "to_dict", None)
+                if bd is None:
+                    continue
+                d = bd() if callable(bd) else bd
+                source = str(d.get("source", ""))
+                if source != "google_calendar":
+                    continue
+                start_val = d.get("start_time") or d.get("start") or ""
+                if isinstance(start_val, str) and start_val[:10] != today.isoformat():
+                    continue
+                # Skip if already present (dedup by summary)
+                summary = d.get("summary") or d.get("title") or d.get("label", "") or d.get("description", "") or ""
+                if any(e.get("summary") == summary for e in calendar_events_today):
+                    continue
+                end_val = d.get("end_time") or d.get("end") or ""
+                calendar_events_today.append({
+                    "summary": str(summary),
+                    "start": str(start_val) if start_val else "",
+                    "end": str(end_val) if end_val else "",
+                    "source": source,
+                })
+        except Exception:
+            pass  # temporal blocks not initialized yet
 
     # Vocab
     vocab_raw = _safe_get(state, "vocab", {})
@@ -3358,6 +3389,123 @@ async def web_actions_undo(request: Request, body: dict):
     }
 
 
+# ── Google Calendar diagnostics (auth required, no secrets) ────────────────────
+
+
+@router.get("/api/web/diagnostics/google-calendar")
+async def web_diagnostics_google_calendar(request: Request):
+    """Check whether Google Calendar real-sync prerequisites are met.
+
+    Returns booleans and path-configured flags only. Never returns token
+    content, credentials content, or any secret.
+    """
+    _require_session(request)
+
+    settings = _settings(request)
+    creds_path = str(getattr(settings, "google_calendar_credentials_path", ""))
+    token_path = str(getattr(settings, "google_calendar_token_path", ""))
+    creds_configured = bool(creds_path)
+    token_configured = bool(token_path)
+    creds_exists = creds_configured and os.path.isfile(creds_path)
+    token_exists = token_configured and os.path.isfile(token_path)
+    calendar_id = str(getattr(settings, "google_calendar_calendar_id", "primary"))
+    mock = bool(getattr(settings, "google_calendar_mock", True))
+    write_enabled = bool(getattr(settings, "google_calendar_write_enabled", False))
+    creds_env = bool(str(getattr(settings, "google_calendar_credentials_json", "")))
+    token_env = bool(str(getattr(settings, "google_calendar_token_json", "")))
+
+    # Credentials available via file OR env var
+    has_creds = creds_exists or creds_env
+    has_token = token_exists or token_env
+
+    missing: list[str] = []
+    if not creds_configured and not creds_env:
+        missing.append("credentials_path")
+    elif not has_creds:
+        missing.append("credentials_file")
+    if not token_configured and not token_env:
+        missing.append("token_path")
+    elif not has_token:
+        missing.append("token_file")
+
+    ready = bool(has_creds and has_token and not mock)
+
+    return {
+        "ok": True,
+        "mock": mock,
+        "write_enabled": write_enabled,
+        "credentials_path_configured": creds_configured,
+        "credentials_file_exists": creds_exists,
+        "credentials_env_configured": creds_env,
+        "token_path_configured": token_configured,
+        "token_file_exists": token_exists,
+        "token_env_configured": token_env,
+        "calendar_id_configured": bool(calendar_id),
+        "timezone": str(getattr(settings, "google_calendar_timezone", "Asia/Singapore")),
+        "ready_for_real_sync": ready,
+        "missing": missing,
+    }
+
+
+# ── Google Calendar manual sync (auth required) ───────────────────────────────
+
+
+@router.post("/api/web/sync/google-calendar")
+async def web_sync_google_calendar(request: Request):
+    """Trigger a read-only Google Calendar sync. Requires valid session."""
+    _require_session(request)
+
+    pipeline: Pipeline | None = getattr(request.app.state, "pipeline", None)
+    if pipeline is None:
+        return JSONResponse(status_code=503, content={"ok": False, "message": "pipeline not available"})
+
+    user_id = _web_user_id(request)
+    trace_id = str(uuid4())
+
+    event = Event(
+        event_type=EventType.CONNECTOR_FETCH_REQUESTED,
+        aggregate_id="google_calendar",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "google_calendar", "query": "calendar_events", "intent": "manual_sync"},
+        metadata=_web_event_metadata(user_id, trace_id),
+    )
+
+    try:
+        produced = await pipeline.run(event)
+        block_count = sum(1 for e in produced if e.event_type == EventType.TEMPORAL_BLOCK_ADDED)
+        cancelled_count = sum(1 for e in produced if e.event_type == EventType.TEMPORAL_BLOCK_CANCELLED)
+        failed = any(e.event_type == EventType.CONNECTOR_FETCH_FAILED for e in produced)
+
+        if failed:
+            err_detail = ""
+            for e in produced:
+                if e.event_type == EventType.CONNECTOR_FETCH_FAILED:
+                    err_detail = e.payload.get("error", "unknown error")
+                    break
+            return {
+                "ok": False,
+                "message": f"同步失败: {err_detail}",
+                "count": 0,
+                "events": len(produced),
+            }
+
+        return {
+            "ok": True,
+            "message": f"日历同步完成，新增 {block_count} 个事件" +
+                       (f"，移除 {cancelled_count} 个" if cancelled_count > 0 else ""),
+            "count": block_count,
+            "events": len(produced),
+        }
+    except Exception as exc:
+        logger.exception("google calendar manual sync failed")
+        return {
+            "ok": False,
+            "message": f"同步异常: {str(exc)}",
+            "count": 0,
+            "events": 0,
+        }
+
+
 # ── System status (auth required, no secrets) ──────────────────────────────────
 
 
@@ -3425,6 +3573,24 @@ async def web_status(request: Request):
         except Exception:
             logger.exception("worker health check failed")
 
+    # Sync health — read from state engine
+    sync_health: dict[str, Any] = {
+        "google_calendar": {"status": "unknown"},
+    }
+    if state_engine:
+        try:
+            sync_state = state_engine._state.get("sync", {})
+            gcal_sync = sync_state.get("google_calendar", {})
+            if gcal_sync:
+                sync_health["google_calendar"] = {
+                    "status": gcal_sync.get("status", "unknown"),
+                    "last_sync": gcal_sync.get("last_sync_completed") or gcal_sync.get("last_sync"),
+                    "count": gcal_sync.get("count") or gcal_sync.get("block_count") or gcal_sync.get("item_count"),
+                    "error": gcal_sync.get("error", ""),
+                }
+        except Exception:
+            pass
+
     return {
         "ok": True,
         "event_count": event_count,
@@ -3433,4 +3599,5 @@ async def web_status(request: Request):
         "bus_subscribers": bus_subscribers,
         "settings": settings_info,
         "worker": worker_info,
+        "sync_health": sync_health,
     }

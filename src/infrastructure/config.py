@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     google_calendar_mock: bool = True
     google_calendar_credentials_path: str = "data/google_credentials.json"
     google_calendar_token_path: str = "data/google_token.json"
+    google_calendar_credentials_json: str = ""
+    google_calendar_token_json: str = ""
     google_calendar_calendar_id: str = "primary"
     google_calendar_timezone: str = "Asia/Singapore"
     google_calendar_sync_window_days: int = 14
@@ -124,3 +126,49 @@ class Settings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
+    def apply_env_google_credentials(self) -> None:
+        """Write Google Calendar credentials/token from env vars to temp files.
+
+        Render cannot host files; set GOOGLE_CALENDAR_CREDENTIALS_JSON and
+        GOOGLE_CALENDAR_TOKEN_JSON as environment variables.  This method
+        validates the JSON, writes it to disk, and updates the file-path
+        settings so the existing GoogleCalendarConnector works unchanged.
+
+        Never logs the JSON content — only a success/failure line.
+        """
+        import json as _json
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        # ── Credentials ─────────────────────────────────────────────────
+        if self.google_calendar_credentials_json:
+            try:
+                parsed = _json.loads(self.google_calendar_credentials_json)
+                if not isinstance(parsed, dict) or "installed" not in parsed and "web" not in parsed:
+                    _log.warning("credentials json valid but missing 'installed'/'web' key — skipping")
+                else:
+                    dest = str(Path(self.data_dir) / "google_credentials_from_env.json")
+                    Path(dest).write_text(self.google_calendar_credentials_json, encoding="utf-8")
+                    self.google_calendar_credentials_path = dest
+                    _log.info("credentials json loaded from env → %s", dest)
+            except _json.JSONDecodeError:
+                _log.warning("credentials json from env is not valid JSON — skipping")
+            except Exception:
+                _log.exception("failed to write credentials json from env")
+
+        # ── Token ───────────────────────────────────────────────────────
+        if self.google_calendar_token_json:
+            try:
+                parsed = _json.loads(self.google_calendar_token_json)
+                if not isinstance(parsed, dict):
+                    _log.warning("token json from env is not a JSON object — skipping")
+                else:
+                    dest = str(Path(self.data_dir) / "google_token_from_env.json")
+                    Path(dest).write_text(self.google_calendar_token_json, encoding="utf-8")
+                    self.google_calendar_token_path = dest
+                    _log.info("token json loaded from env → %s", dest)
+            except _json.JSONDecodeError:
+                _log.warning("token json from env is not valid JSON — skipping")
+            except Exception:
+                _log.exception("failed to write token json from env")

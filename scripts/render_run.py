@@ -26,6 +26,7 @@ logger = logging.getLogger("render")
 async def main():
     settings = Settings()
     settings.ensure_dirs()
+    settings.apply_env_google_credentials()
 
     await init_db(settings.database_url)
     event_store = EventStore()
@@ -52,6 +53,12 @@ async def main():
     for event_type in EventType:
         bus.subscribe(event_type, state_engine.apply)
     logger.info("state engine subscribed to %d event types", len(EventType))
+
+    # Wire Google Calendar connector for read-only sync
+    from src.connector.google_calendar.client import GoogleCalendarConnector
+    gcal = GoogleCalendarConnector(settings=settings)
+    bus.subscribe(EventType.CONNECTOR_FETCH_REQUESTED, gcal.handle_fetch_request)
+    logger.info("google calendar connector subscribed, mock=%s", settings.google_calendar_mock)
 
     # Build app
     app = create_app(
