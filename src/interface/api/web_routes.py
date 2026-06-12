@@ -6,6 +6,7 @@ The old ``/workout`` token auth is untouched.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -3565,26 +3566,25 @@ async def web_sync_jwxt_raw(request: Request):
             metadata=_web_event_metadata(user_id, trace_id),
         ))
 
-        # Mirror JWXT schedule to Google Calendar
-        gcal_result = None
-        try:
-            from src.executor.google_calendar.executor import GoogleCalendarExecutor
-            from src.core.temporal import TimeBlock
-            settings = _settings(request)
-            time_blocks = [TimeBlock.from_dict(b) for b in blocks]
-            executor = GoogleCalendarExecutor(
-                use_mock=settings.google_calendar_mock,
-                settings=settings,
-            )
-            gcal_result = await executor.sync_schedule_blocks(time_blocks)
-        except Exception as exc:
-            logger.warning("jwxt->gcal mirror failed (non-fatal): %s", exc)
+        # Mirror JWXT schedule to Google Calendar (background, non-blocking)
+        async def _mirror_to_gcal():
+            try:
+                from src.executor.google_calendar.executor import GoogleCalendarExecutor
+                from src.core.temporal import TimeBlock
+                settings = _settings(request)
+                time_blocks = [TimeBlock.from_dict(b) for b in blocks]
+                executor = GoogleCalendarExecutor(
+                    use_mock=settings.google_calendar_mock,
+                    settings=settings,
+                )
+                result = await executor.sync_schedule_blocks(time_blocks)
+                logger.info("jwxt->gcal mirror: %s", result)
+            except Exception as exc:
+                logger.warning("jwxt->gcal mirror failed (non-fatal): %s", exc)
 
-        message = f"手动导入 {len(blocks)} 个课程, {len(courses_seen)} 门课"
-        if gcal_result and gcal_result.get("ok"):
-            message += f", 同步 {gcal_result.get('created', 0)} 个到 Google Calendar"
+        asyncio.create_task(_mirror_to_gcal())
 
-        return {"ok": True, "message": message, "count": len(blocks), "events": published, "gcal": gcal_result}
+        return {"ok": True, "message": f"手动导入 {len(blocks)} 个课程, {len(courses_seen)} 门课 (Google Calendar 后台同步中...)", "count": len(blocks), "events": published}
     except Exception as exc:
         logger.exception("jwxt raw import failed")
         return {"ok": False, "message": f"解析失败: {exc}", "count": 0, "events": 0}
