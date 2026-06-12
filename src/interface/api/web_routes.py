@@ -325,17 +325,34 @@ def _build_dashboard(state_engine: StateEngine | None, settings: Any) -> dict[st
                 if source not in ("google_calendar", "jwxt"):
                     continue
                 start_val = d.get("start_time") or d.get("start") or ""
-                if isinstance(start_val, str) and start_val[:10] != today.isoformat():
-                    continue
-                # Skip if already present (dedup by summary)
+                # Check if block is for today
+                if isinstance(start_val, str):
+                    if start_val[:10] != today.isoformat():
+                        continue
+                # Dedup by summary against calendar_events_today
                 summary = d.get("summary") or d.get("title") or d.get("label", "") or d.get("description", "") or ""
                 if any(e.get("summary") == summary for e in calendar_events_today):
                     continue
                 end_val = d.get("end_time") or d.get("end") or ""
-                calendar_events_today.append({
+                location = d.get("location", "")
+                teacher = (d.get("metadata") or {}).get("teacher", d.get("description", ""))
+                entry = {
                     "summary": str(summary),
                     "start": str(start_val) if start_val else "",
                     "end": str(end_val) if end_val else "",
+                    "source": source,
+                }
+                calendar_events_today.append(entry)
+                # Also populate blocks_today for temporal/weekly view
+                blocks_today.append({
+                    "course": str(summary),
+                    "name": str(summary),
+                    "start": str(start_val) if start_val else "",
+                    "start_time": str(start_val) if start_val else "",
+                    "end": str(end_val) if end_val else "",
+                    "end_time": str(end_val) if end_val else "",
+                    "location": str(location),
+                    "teacher": str(teacher),
                     "source": source,
                 })
         except Exception:
@@ -3548,7 +3565,26 @@ async def web_sync_jwxt_raw(request: Request):
             metadata=_web_event_metadata(user_id, trace_id),
         ))
 
-        return {"ok": True, "message": f"手动导入 {len(blocks)} 个课程, {len(courses_seen)} 门课", "count": len(blocks), "events": published}
+        # Mirror JWXT schedule to Google Calendar
+        gcal_result = None
+        try:
+            from src.executor.google_calendar.executor import GoogleCalendarExecutor
+            from src.core.temporal import TimeBlock
+            settings = _settings(request)
+            time_blocks = [TimeBlock.from_dict(b) for b in blocks]
+            executor = GoogleCalendarExecutor(
+                use_mock=settings.google_calendar_mock,
+                settings=settings,
+            )
+            gcal_result = await executor.sync_schedule_blocks(time_blocks)
+        except Exception as exc:
+            logger.warning("jwxt->gcal mirror failed (non-fatal): %s", exc)
+
+        message = f"手动导入 {len(blocks)} 个课程, {len(courses_seen)} 门课"
+        if gcal_result and gcal_result.get("ok"):
+            message += f", 同步 {gcal_result.get('created', 0)} 个到 Google Calendar"
+
+        return {"ok": True, "message": message, "count": len(blocks), "events": published, "gcal": gcal_result}
     except Exception as exc:
         logger.exception("jwxt raw import failed")
         return {"ok": False, "message": f"解析失败: {exc}", "count": 0, "events": 0}
