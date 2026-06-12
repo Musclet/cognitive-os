@@ -3524,7 +3524,31 @@ async def web_sync_jwxt_raw(request: Request):
             await pipeline.run(evt)
             published += 1
 
-        return {"ok": True, "message": f"手动导入 {len(blocks)} 个课程", "count": len(blocks), "events": published}
+        # Activate courses from imported blocks
+        courses_seen: set[str] = set()
+        for block_dict in blocks:
+            title = block_dict.get("title", "")
+            teacher = (block_dict.get("metadata") or {}).get("teacher", "")
+            if title and title not in courses_seen:
+                courses_seen.add(title)
+                await pipeline.run(Event(
+                    event_type=EventType.COURSE_ACTIVATED,
+                    aggregate_id=title,
+                    aggregate_type=AggregateType.COURSE,
+                    payload={"course_name": title, "teacher": teacher, "source": "jwxt", "semester": "current"},
+                    metadata=_web_event_metadata(user_id, trace_id),
+                ))
+
+        # Update JWXT sync health to completed
+        await pipeline.run(Event(
+            event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+            aggregate_id="jwxt",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={"source": "jwxt", "course_count": len(courses_seen), "block_count": len(blocks)},
+            metadata=_web_event_metadata(user_id, trace_id),
+        ))
+
+        return {"ok": True, "message": f"手动导入 {len(blocks)} 个课程, {len(courses_seen)} 门课", "count": len(blocks), "events": published}
     except Exception as exc:
         logger.exception("jwxt raw import failed")
         return {"ok": False, "message": f"解析失败: {exc}", "count": 0, "events": 0}
