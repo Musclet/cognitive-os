@@ -1,5 +1,6 @@
-"""Render entry point — web server only, no Telegram bot."""
-import asyncio, logging, sys, os
+"""Render entry point — web server with embedded worker heartbeat."""
+import asyncio, logging, sys, os, time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -17,11 +18,40 @@ from src.core.pipeline import Pipeline
 from src.core.state_engine import StateEngine
 from src.core.tracer import Tracer
 from src.core.safety import DeadLetterQueue
-from src.core.events import Event, EventType
+from src.core.events import Event, EventType, AggregateType
 from src.interface.api.app import create_app
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("render")
+
+HEARTBEAT_INTERVAL_S = 30
+
+
+async def _heartbeat_loop(pipeline: Pipeline) -> None:
+    """Background task — emit worker heartbeat every 30s so /api/web/status reports worker alive."""
+    emit_count = 0
+    started_at = time.monotonic()
+    logger.info("embedded worker heartbeat started (interval=%ds)", HEARTBEAT_INTERVAL_S)
+    while True:
+        try:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+        except asyncio.CancelledError:
+            logger.info("embedded worker heartbeat cancelled")
+            break
+        emit_count += 1
+        uptime_s = time.monotonic() - started_at
+        try:
+            event = Event(
+                event_type=EventType.SYSTEM_RUNTIME_HEARTBEAT,
+                aggregate_id="worker",
+                aggregate_type=AggregateType.SYSTEM,
+                timestamp=datetime.now(timezone.utc),
+                payload={"emit_count": emit_count, "uptime_s": round(uptime_s, 1), "source": "worker"},
+                metadata={"source": "worker"},
+            )
+            await pipeline.run(event)
+        except Exception:
+            logger.exception("heartbeat #%d failed", emit_count)
 
 async def main():
     settings = Settings()
@@ -70,12 +100,22 @@ async def main():
     )
     app.state.settings = settings
 
+    # Start embedded worker heartbeat as a background task
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(pipeline))
+
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
-    logger.info("Starting web server on port %s", port)
-    await server.serve()
+    logger.info("web server starting on port %s (with embedded worker heartbeat)", port)
+    try:
+        await server.serve()
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 if __name__ == "__main__":
     asyncio.run(main())
