@@ -27,7 +27,9 @@ services:
       - key: CHAOXING_MOCK
         value: "true"
       - key: JWXT_MOCK
-        value: "true"
+        value: "false"
+      - key: JWXT_COOKIES_JSON
+        sync: false
       - key: MOMO_SYNC_ENABLED
         value: "false"
       - key: TELEGRAM_BOT_TOKEN
@@ -51,6 +53,8 @@ services:
       - key: CHAOXING_MOCK
         value: "true"
       - key: JWXT_MOCK
-        value: "true"
+        value: "false"
+      - key: JWXT_COOKIES_JSON
+        sync: false
       - key: MOMO_SYNC_ENABLED
         value: "false"

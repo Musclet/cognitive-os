@@ -57,6 +57,7 @@ async def main():
     settings = Settings()
     settings.ensure_dirs()
     settings.apply_env_google_credentials()
+    settings.apply_env_jwxt_cookies()
 
     await init_db(settings.database_url)
     event_store = EventStore()
@@ -89,6 +90,12 @@ async def main():
     gcal = GoogleCalendarConnector(settings=settings)
     bus.subscribe(EventType.CONNECTOR_FETCH_REQUESTED, gcal.handle_fetch_request)
     logger.info("google calendar connector subscribed, mock=%s", settings.google_calendar_mock)
+
+    # Wire JWXT connector for schedule sync
+    from src.connector.jwxt.client import JwxtConnector
+    jwxt = JwxtConnector(use_mock=settings.jwxt_mock, settings=settings)
+    bus.subscribe(EventType.CONNECTOR_FETCH_REQUESTED, jwxt.handle_fetch_request)
+    logger.info("jwxt connector subscribed, mock=%s", settings.jwxt_mock)
 
     # Build app
     app = create_app(

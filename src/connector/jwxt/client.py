@@ -75,7 +75,12 @@ class JwxtConnector(Connector):
         return {"source": self.source_name, "error": f"unsupported query: {query}"}
 
     async def _real_weekly_schedule(self) -> dict[str, Any]:
-        raw = await self._fetch_schedule_api()
+        # Prefer httpx (lightweight, works on Render), fall back to Playwright
+        try:
+            raw = await self._fetch_schedule_api_httpx()
+        except Exception:
+            logger.debug("httpx fetch failed, falling back to Playwright", exc_info=True)
+            raw = await self._fetch_schedule_api_playwright()
         kb_list = raw.get("kbList", [])
         semester_start = _parse_date(self.settings.jwxt_semester_start)
         today = datetime.now(LOCAL_TZ).date()
@@ -168,7 +173,36 @@ class JwxtConnector(Connector):
             "teaching_week": current_week,
         }
 
-    async def _fetch_schedule_api(self) -> dict[str, Any]:
+    async def _fetch_schedule_api_httpx(self) -> dict[str, Any]:
+        """Fetch schedule via httpx using saved cookies — no browser needed (Render-safe)."""
+        import httpx
+
+        cookie_path = Path(self.settings.jwxt_cookies_path)
+        if not cookie_path.exists():
+            raise RuntimeError(f"JWXT cookie file not found: {cookie_path}")
+
+        cookies_list = json.loads(cookie_path.read_text("utf-8"))
+        cookies_jar: dict[str, str] = {}
+        for c in cookies_list:
+            cookies_jar[c["name"]] = c["value"]
+
+        api_url = self._absolute_url("/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151")
+        async with httpx.AsyncClient(cookies=cookies_jar, timeout=30, follow_redirects=False) as client:
+            r = await client.post(
+                api_url,
+                data={
+                    "xnm": self.settings.jwxt_schedule_year,
+                    "xqm": self.settings.jwxt_schedule_semester,
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Referer": self._absolute_url("/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default"),
+                },
+            )
+            r.raise_for_status()
+            return r.json()
+
+    async def _fetch_schedule_api_playwright(self) -> dict[str, Any]:
         p = await async_playwright().start()
         browser: Browser | None = None
         try:

@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     jwxt_semester_start: str = "2026-03-02"
     jwxt_schedule_window_days: int = 14
     jwxt_cookies_path: str = "data/jwxt_cookies.json"
+    jwxt_cookies_json: str = ""
     jwxt_headless: bool = True
 
     google_calendar_mock: bool = True
@@ -172,3 +173,32 @@ class Settings(BaseSettings):
                 _log.warning("token json from env is not valid JSON — skipping")
             except Exception:
                 _log.exception("failed to write token json from env")
+
+    def apply_env_jwxt_cookies(self) -> None:
+        """Write JWXT cookies from env var to a file so JwxtConnector can load them.
+
+        Render cannot host files; set JWXT_COOKIES_JSON as an environment variable.
+        This method validates the JSON, writes it to disk, and updates the path
+        setting so the JwxtConnector works unchanged.
+
+        Never logs the cookie content.
+        """
+        import json as _json
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        if not self.jwxt_cookies_json:
+            return
+        try:
+            parsed = _json.loads(self.jwxt_cookies_json)
+            if not isinstance(parsed, list):
+                _log.warning("jwxt cookies json is not a JSON array — skipping")
+                return
+            dest = str(Path(self.data_dir) / "jwxt_cookies_from_env.json")
+            Path(dest).write_text(self.jwxt_cookies_json, encoding="utf-8")
+            self.jwxt_cookies_path = dest
+            _log.info("jwxt cookies loaded from env → %s (%d cookies)", dest, len(parsed))
+        except _json.JSONDecodeError:
+            _log.warning("jwxt cookies json from env is not valid JSON — skipping")
+        except Exception:
+            _log.exception("failed to write jwxt cookies from env")
