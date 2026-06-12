@@ -82,92 +82,26 @@ class JwxtConnector(Connector):
             logger.warning("httpx fetch failed, falling back to Playwright: %s", e)
             raw = await self._fetch_schedule_api_playwright()
         kb_list = raw.get("kbList", [])
-        semester_start = _parse_date(self.settings.jwxt_semester_start)
+
         today = datetime.now(LOCAL_TZ).date()
         week_start = today - timedelta(days=today.weekday())
-        current_week = _teaching_week(today, semester_start)
         window_days = max(1, int(getattr(self.settings, "jwxt_schedule_window_days", 14) or 14))
-        window_end = today + timedelta(days=window_days - 1)
-        weeks_ahead = max(1, (window_days + today.weekday() + 6) // 7)
+        semester_start = _parse_date(self.settings.jwxt_semester_start)
+        current_week = _teaching_week(today, semester_start)
 
-        blocks: list[TimeBlock] = []
+        block_dicts = self.parse_kb_list(kb_list)
         all_courses: set[str] = set()
-        skipped_by_week = 0
+        for b in block_dicts:
+            t = b.get("title", "")
+            if t:
+                all_courses.add(t)
 
-        for item in kb_list:
-            raw_title = str(item.get("kcmc", "")).strip()
-            teacher = str(item.get("xm", "")).strip()
-            title = normalize_course_name(raw_title, teacher)
-            if title:
-                all_courses.add(title)
-            if not raw_title:
-                continue
-
-            weeks_raw = str(item.get("zcd", "")).strip()
-            weekday = _weekday_to_num(str(item.get("xqjmc", "")))
-            if not weekday:
-                continue
-
-            start_text, end_text = _jcs_to_time(str(item.get("jcs", "")))
-            if start_text == "00:00":
-                continue
-
-            room = str(item.get("cdmc", "")).strip() or "未提供地址"
-            jcs = str(item.get("jcs", "")).strip()
-            matched_window = False
-            if current_week and semester_start:
-                week_numbers = range(current_week, current_week + weeks_ahead + 1)
-            else:
-                week_numbers = [None]
-
-            for teaching_week in week_numbers:
-                if teaching_week is None:
-                    class_date = week_start + timedelta(days=weekday - 1)
-                else:
-                    if weeks_raw and not _week_matches(weeks_raw, teaching_week):
-                        continue
-                    class_date = semester_start + timedelta(weeks=teaching_week - 1, days=weekday - 1)
-
-                if class_date < today or class_date > window_end:
-                    continue
-
-                matched_window = True
-                block_id = str(uuid5(
-                    NAMESPACE_URL,
-                    f"jwxt|{title}|{class_date.isoformat()}|{start_text}|{end_text}|{room}|{teacher}|{weeks_raw}",
-                ))
-
-                blocks.append(TimeBlock(
-                    block_id=block_id,
-                    source=TemporalSource.JWXT,
-                    block_type=_infer_block_type(room, jcs),
-                    start=_combine_local(class_date, start_text),
-                    end=_combine_local(class_date, end_text),
-                    title=title,
-                    location=room,
-                    description=teacher,
-                    metadata={
-                        "teacher": teacher,
-                        "raw_title": raw_title,
-                        "room": room,
-                        "weeks": weeks_raw,
-                        "jcs": jcs,
-                        "weekday": weekday,
-                        "teaching_week": teaching_week or current_week,
-                    },
-                ))
-
-            if current_week and weeks_raw and not matched_window:
-                skipped_by_week += 1
-
-        blocks = _dedupe_blocks(blocks)
         return {
             "source": self.source_name,
-            "blocks": [b.to_dict() for b in blocks],
-            "count": len(blocks),
+            "blocks": block_dicts,
+            "count": len(block_dicts),
             "course_names": sorted(all_courses),
             "raw_count": len(kb_list),
-            "skipped_by_week": skipped_by_week,
             "week_start": week_start.isoformat(),
             "window_days": window_days,
             "teaching_week": current_week,
@@ -343,6 +277,89 @@ class JwxtConnector(Connector):
             "count": len(today_blocks),
             "date": now.strftime("%Y-%m-%d"),
         }
+
+    def parse_kb_list(self, kb_list: list[dict]) -> list[dict]:
+        """Parse raw JWXT kbList into TimeBlock dicts. Pure function, no I/O."""
+        semester_start = _parse_date(self.settings.jwxt_semester_start)
+        today = datetime.now(LOCAL_TZ).date()
+        week_start = today - timedelta(days=today.weekday())
+        current_week = _teaching_week(today, semester_start)
+        window_days = max(1, int(getattr(self.settings, "jwxt_schedule_window_days", 14) or 14))
+        window_end = today + timedelta(days=window_days - 1)
+        weeks_ahead = max(1, (window_days + today.weekday() + 6) // 7)
+
+        blocks: list[TimeBlock] = []
+        all_courses: set[str] = set()
+        skipped_by_week = 0
+
+        for item in kb_list:
+            raw_title = str(item.get("kcmc", "")).strip()
+            teacher = str(item.get("xm", "")).strip()
+            title = normalize_course_name(raw_title, teacher)
+            if title:
+                all_courses.add(title)
+            if not raw_title:
+                continue
+
+            weeks_raw = str(item.get("zcd", "")).strip()
+            weekday = _weekday_to_num(str(item.get("xqjmc", "")))
+            if not weekday:
+                continue
+
+            start_text, end_text = _jcs_to_time(str(item.get("jcs", "")))
+            if start_text == "00:00":
+                continue
+
+            room = str(item.get("cdmc", "")).strip() or "未提供地址"
+            jcs = str(item.get("jcs", "")).strip()
+            matched_window = False
+            if current_week and semester_start:
+                week_numbers = range(current_week, current_week + weeks_ahead + 1)
+            else:
+                week_numbers = [None]
+
+            for teaching_week in week_numbers:
+                if teaching_week is None:
+                    class_date = week_start + timedelta(days=weekday - 1)
+                else:
+                    if weeks_raw and not _week_matches(weeks_raw, teaching_week):
+                        continue
+                    class_date = semester_start + timedelta(weeks=teaching_week - 1, days=weekday - 1)
+
+                if class_date < today or class_date > window_end:
+                    continue
+
+                matched_window = True
+                block_id = str(uuid5(
+                    NAMESPACE_URL,
+                    f"jwxt|{title}|{class_date.isoformat()}|{start_text}|{end_text}|{room}|{teacher}|{weeks_raw}",
+                ))
+
+                blocks.append(TimeBlock(
+                    block_id=block_id,
+                    source=TemporalSource.JWXT,
+                    block_type=_infer_block_type(room, jcs),
+                    start=_combine_local(class_date, start_text),
+                    end=_combine_local(class_date, end_text),
+                    title=title,
+                    location=room,
+                    description=teacher,
+                    metadata={
+                        "teacher": teacher,
+                        "raw_title": raw_title,
+                        "room": room,
+                        "weeks": weeks_raw,
+                        "jcs": jcs,
+                        "weekday": weekday,
+                        "teaching_week": teaching_week or current_week,
+                    },
+                ))
+
+            if current_week and weeks_raw and not matched_window:
+                skipped_by_week += 1
+
+        blocks = _dedupe_blocks(blocks)
+        return [b.to_dict() for b in blocks]
 
     async def handle_fetch_request(self, event: Event) -> list[Event]:
         """Fetch schedule, then emit temporal/course/completion events."""
