@@ -14,9 +14,26 @@ from src.storage.db import get_session
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_DDL = [
+SCHEMA_DDL_SQLITE = [
     """CREATE TABLE IF NOT EXISTS event_log (
     sequence       INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id       TEXT NOT NULL UNIQUE,
+    event_type     TEXT NOT NULL,
+    aggregate_id   TEXT NOT NULL,
+    aggregate_type TEXT NOT NULL,
+    timestamp      TEXT NOT NULL,
+    causation_id   TEXT,
+    payload        TEXT NOT NULL,
+    metadata       TEXT NOT NULL
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_event_log_type ON event_log(event_type)",
+    "CREATE INDEX IF NOT EXISTS idx_event_log_aggregate ON event_log(aggregate_id)",
+    "CREATE INDEX IF NOT EXISTS idx_event_log_causation ON event_log(causation_id)",
+]
+
+SCHEMA_DDL_POSTGRES = [
+    """CREATE TABLE IF NOT EXISTS event_log (
+    sequence       SERIAL PRIMARY KEY,
     event_id       TEXT NOT NULL UNIQUE,
     event_type     TEXT NOT NULL,
     aggregate_id   TEXT NOT NULL,
@@ -43,8 +60,12 @@ class EventStore:
             return
         session = await get_session()
         try:
-            for ddl in SCHEMA_DDL:
-                await session.execute(text(ddl))
+            # Detect database type from engine URL
+            from sqlalchemy.ext.asyncio import AsyncSession
+            engine_url = str(session.get_bind().url)
+            ddl = SCHEMA_DDL_POSTGRES if "postgresql" in engine_url else SCHEMA_DDL_SQLITE
+            for stmt in ddl:
+                await session.execute(text(stmt))
             await session.commit()
             self._initialized = True
         finally:
