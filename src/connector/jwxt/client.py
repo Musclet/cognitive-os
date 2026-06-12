@@ -78,8 +78,8 @@ class JwxtConnector(Connector):
         # Prefer httpx (lightweight, works on Render), fall back to Playwright
         try:
             raw = await self._fetch_schedule_api_httpx()
-        except Exception:
-            logger.debug("httpx fetch failed, falling back to Playwright", exc_info=True)
+        except Exception as e:
+            logger.warning("httpx fetch failed, falling back to Playwright: %s", e)
             raw = await self._fetch_schedule_api_playwright()
         kb_list = raw.get("kbList", [])
         semester_start = _parse_date(self.settings.jwxt_semester_start)
@@ -178,6 +178,7 @@ class JwxtConnector(Connector):
         import httpx
 
         cookie_path = Path(self.settings.jwxt_cookies_path)
+        logger.info("JWXT httpx: cookie_path=%s exists=%s", cookie_path, cookie_path.exists())
         if not cookie_path.exists():
             raise RuntimeError(f"JWXT cookie file not found: {cookie_path}")
 
@@ -185,8 +186,10 @@ class JwxtConnector(Connector):
         cookies_jar: dict[str, str] = {}
         for c in cookies_list:
             cookies_jar[c["name"]] = c["value"]
+        logger.info("JWXT httpx: loaded %d cookies: %s", len(cookies_jar), list(cookies_jar.keys()))
 
         api_url = self._absolute_url("/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151")
+        logger.info("JWXT httpx: POST %s", api_url)
         async with httpx.AsyncClient(cookies=cookies_jar, timeout=30, follow_redirects=False) as client:
             r = await client.post(
                 api_url,
@@ -199,6 +202,7 @@ class JwxtConnector(Connector):
                     "Referer": self._absolute_url("/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default"),
                 },
             )
+            logger.info("JWXT httpx: response status=%s len=%d", r.status_code, len(r.text))
             r.raise_for_status()
             return r.json()
 
