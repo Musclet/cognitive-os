@@ -312,7 +312,7 @@ def _build_dashboard(state_engine: StateEngine | None, settings: Any) -> dict[st
                     "source": "legacy",
                 })
 
-    # Merge Google Calendar temporal blocks for today
+    # Merge Google Calendar + JWXT temporal blocks for today
     if state_engine is not None:
         try:
             all_blocks = state_engine.get_temporal_blocks()
@@ -322,7 +322,7 @@ def _build_dashboard(state_engine: StateEngine | None, settings: Any) -> dict[st
                     continue
                 d = bd() if callable(bd) else bd
                 source = str(d.get("source", ""))
-                if source != "google_calendar":
+                if source not in ("google_calendar", "jwxt"):
                     continue
                 start_val = d.get("start_time") or d.get("start") or ""
                 if isinstance(start_val, str) and start_val[:10] != today.isoformat():
