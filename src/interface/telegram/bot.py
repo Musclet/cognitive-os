@@ -2987,6 +2987,7 @@ class CognitiveOSBot:
                     self.state_engine.get_temporal_blocks(include_school_leave_classes=True),
                     days=int(event.payload.get("days", self.settings.google_calendar_schedule_sync_days)),
                     calendar_id=event.payload.get("calendar_id", self.settings.google_calendar_schedule_calendar_id),
+                    proposal=None,
                 )
                 if not result.get("ok"):
                     error = result.get("error", "未知错误")
@@ -2994,6 +2995,8 @@ class CognitiveOSBot:
                     # Friendly Chinese failure reason
                     friendly_reasons = {
                         "schedule_calendar_write_disabled": "写入开关未开启",
+                        "proposal_required: schedule mirror writes require an accepted proposal": "缺少审批提案",
+                        "proposal_not_accepted: schedule mirror writes require an accepted proposal": "提案未审批",
                     }
                     reason_cn = friendly_reasons.get(error, _friendly_error(error))
                     user_msg = f"课表镜像失败：{reason_cn}，目标日历 {cal_id}"
