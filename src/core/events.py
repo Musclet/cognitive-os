@@ -299,6 +299,19 @@ class Event:
             causation_id=causation_id,
         )
 
+    def with_metadata(self, **extra: Any) -> "Event":
+        """Return a copy with additional metadata without mutating this event."""
+        return Event(
+            event_type=self.event_type,
+            aggregate_id=self.aggregate_id,
+            aggregate_type=self.aggregate_type,
+            payload=dict(self.payload),
+            metadata={**self.metadata, **extra},
+            event_id=self.event_id,
+            timestamp=self.timestamp,
+            causation_id=self.causation_id,
+        )
+
 
 @dataclass
 class Command:
@@ -327,4 +340,3 @@ class OutputEvent:
         self.user_id = str(self.user_id)
         if self.payload is None:
             self.payload = {}
-
