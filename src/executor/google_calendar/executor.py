@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from src.core.proposal import Proposal, ProposalStatus
+from src.core.proposal import Proposal, ProposalStatus, TargetSystem
 from src.core.events import Event, EventType, AggregateType
 from src.core.temporal import TimeBlock
 from src.infrastructure.config import Settings
@@ -238,6 +238,11 @@ class GoogleCalendarExecutor:
                 return {"ok": False, "error": "proposal_required: schedule mirror writes require an accepted proposal"}
             if proposal.status != ProposalStatus.ACCEPTED:
                 return {"ok": False, "error": "proposal_not_accepted: schedule mirror writes require an accepted proposal"}
+            if proposal.target_system != TargetSystem.GOOGLE_CALENDAR:
+                return {"ok": False, "error": "invalid_proposal_target: schedule mirror writes require a Google Calendar proposal"}
+            operation = proposal.action_payload.get("operation")
+            if operation not in {"sync_schedule_blocks", "calendar_schedule_mirror"}:
+                return {"ok": False, "error": "invalid_proposal_operation: schedule mirror writes require a schedule mirror proposal"}
 
         days = days or self.settings.google_calendar_schedule_sync_days
         calendar_id = calendar_id or self.settings.google_calendar_schedule_calendar_id

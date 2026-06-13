@@ -153,6 +153,125 @@ async def test_schedule_write_enabled_accepted_proposal_allows_mock():
     assert result.get("created") is not None
 
 
+# ── Gate: proposal scope — target_system must be GOOGLE_CALENDAR ────────
+
+@pytest.mark.asyncio
+async def test_schedule_write_enabled_telegram_proposal_blocks():
+    """ACCEPTED TELEGRAM_REMINDER proposal → blocked with invalid_proposal_target."""
+    from src.executor.google_calendar.executor import GoogleCalendarExecutor
+
+    settings = Settings(
+        google_calendar_mock=False,
+        google_calendar_schedule_write_enabled=True,
+        google_calendar_write_requires_acceptance=True,
+    )
+    executor = GoogleCalendarExecutor(use_mock=False, settings=settings)
+
+    proposal = Proposal(
+        proposal_id="p-telegram",
+        user_id="u1",
+        target_system=TargetSystem.TELEGRAM_REMINDER,
+    )
+    proposal.status = ProposalStatus.ACCEPTED
+
+    result = await executor.sync_schedule_blocks([], proposal=proposal)
+    assert result.get("ok") is False
+    assert "invalid_proposal_target" in result.get("error", "")
+
+
+# ── Gate: proposal scope — operation must authorize schedule mirror ─────
+
+@pytest.mark.asyncio
+async def test_schedule_write_enabled_no_operation_blocks():
+    """ACCEPTED GOOGLE_CALENDAR proposal without operation → blocked."""
+    from src.executor.google_calendar.executor import GoogleCalendarExecutor
+
+    settings = Settings(
+        google_calendar_mock=False,
+        google_calendar_schedule_write_enabled=True,
+        google_calendar_write_requires_acceptance=True,
+    )
+    executor = GoogleCalendarExecutor(use_mock=False, settings=settings)
+
+    proposal = Proposal(
+        proposal_id="p-no-op",
+        user_id="u1",
+        target_system=TargetSystem.GOOGLE_CALENDAR,
+        action_payload={"title": "Test"},  # no 'operation' key
+    )
+    proposal.status = ProposalStatus.ACCEPTED
+
+    result = await executor.sync_schedule_blocks([], proposal=proposal)
+    assert result.get("ok") is False
+    assert "invalid_proposal_operation" in result.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_schedule_write_enabled_wrong_operation_blocks():
+    """ACCEPTED GOOGLE_CALENDAR proposal with wrong operation → blocked."""
+    from src.executor.google_calendar.executor import GoogleCalendarExecutor
+
+    settings = Settings(
+        google_calendar_mock=False,
+        google_calendar_schedule_write_enabled=True,
+        google_calendar_write_requires_acceptance=True,
+    )
+    executor = GoogleCalendarExecutor(use_mock=False, settings=settings)
+
+    proposal = Proposal(
+        proposal_id="p-wrong-op",
+        user_id="u1",
+        target_system=TargetSystem.GOOGLE_CALENDAR,
+        action_payload={"operation": "create_calendar_event"},
+    )
+    proposal.status = ProposalStatus.ACCEPTED
+
+    result = await executor.sync_schedule_blocks([], proposal=proposal)
+    assert result.get("ok") is False
+    assert "invalid_proposal_operation" in result.get("error", "")
+
+
+# ── Gate: valid proposal passes all authorization checks ────────────────
+
+@pytest.mark.asyncio
+async def test_schedule_write_enabled_valid_proposal_allows():
+    """ACCEPTED GOOGLE_CALENDAR proposal + operation=sync_schedule_blocks → allowed (non-mock, patched)."""
+    from unittest.mock import MagicMock
+    from src.executor.google_calendar.executor import GoogleCalendarExecutor
+    from src.core.temporal import TimeBlock, TemporalSource, TimeBlockType
+    from datetime import datetime, timedelta, timezone
+
+    settings = Settings(
+        google_calendar_mock=False,
+        google_calendar_schedule_write_enabled=True,
+        google_calendar_write_requires_acceptance=True,
+    )
+    executor = GoogleCalendarExecutor(use_mock=False, settings=settings)
+
+    # Patch real API calls to avoid Google auth / HTTP
+    executor._calendar_service = MagicMock()
+    executor._list_managed_schedule_events = MagicMock(return_value=[])
+    executor._execute_with_retry = MagicMock(return_value={"id": "fake-event-1"})
+
+    proposal = Proposal(
+        proposal_id="p-valid",
+        user_id="u1",
+        target_system=TargetSystem.GOOGLE_CALENDAR,
+        action_payload={"operation": "sync_schedule_blocks"},
+    )
+    proposal.status = ProposalStatus.ACCEPTED
+
+    now = datetime.now(timezone.utc) + timedelta(hours=1)
+    blocks = [
+        TimeBlock("jwxt-1", TemporalSource.JWXT, TimeBlockType.CLASS_LECTURE,
+                  now, now + timedelta(hours=1), "课程", "A101"),
+    ]
+
+    result = await executor.sync_schedule_blocks(blocks, proposal=proposal)
+    assert result.get("ok") is True
+    assert result.get("created", 0) >= 0
+
+
 # ── Error string specificity ────────────────────────────────────────────
 
 @pytest.mark.asyncio
