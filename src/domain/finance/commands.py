@@ -33,6 +33,7 @@ def build_finance_events(
                 "amount": amount,
                 "category": category,
                 "description": description or f"消费{amount}",
+                "user_id": user_id,
             },
             metadata,
         )]
@@ -48,6 +49,7 @@ def build_finance_events(
                 "amount": amount,
                 "source": source,
                 "description": description or f"收入{amount}",
+                "user_id": user_id,
             },
             metadata,
         )]

@@ -662,7 +662,7 @@ async def web_finance_action(request: Request, body: dict):
                 event_type=EventType.FINANCE_TRANSACTION_RECORDED,
                 aggregate_id=user_id,
                 aggregate_type=AggregateType.FINANCE,
-                payload={"amount": amount, "category": category, "description": description or f"消费{amount}"},
+                payload={"amount": amount, "category": category, "description": description or f"消费{amount}", "user_id": user_id},
                 metadata=metadata,
             )
             root_events.append(event)
@@ -678,7 +678,7 @@ async def web_finance_action(request: Request, body: dict):
                 event_type=EventType.FINANCE_INCOME_RECORDED,
                 aggregate_id=user_id,
                 aggregate_type=AggregateType.FINANCE,
-                payload={"amount": amount, "source": source, "description": description or f"收入{amount}"},
+                payload={"amount": amount, "source": source, "description": description or f"收入{amount}", "user_id": user_id},
                 metadata=metadata,
             )
             root_events.append(event)
