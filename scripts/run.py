@@ -41,6 +41,20 @@ async def main():
     setup_event_loop_monitoring()
 
     settings = Settings()
+
+    # ── Local dev defaults for Web UI login ─────────────────────────────
+    # Only applied when WEB_UI_PIN is not already configured via env or .env.
+    # render_run.py is unaffected — this code only runs in scripts/run.py.
+    _pin = (settings.web_ui_pin or "").strip()
+    if not _pin:
+        settings.web_ui_pin = "123456"
+        logger.info("Local Web UI dev PIN: 123456")
+    _secret = (settings.web_ui_session_secret or "").strip()
+    if not _secret:
+        settings.web_ui_session_secret = "local-dev-session-secret"
+    if "WEB_UI_COOKIE_SECURE" not in _os.environ:
+        settings.web_ui_cookie_secure = False
+
     runtime = await build_runtime(settings, mode="local", web_ui_dist_path="web/dist")
 
     # ── Storage ────────────────────────────────────────────────────

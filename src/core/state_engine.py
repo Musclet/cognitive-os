@@ -727,20 +727,32 @@ class StateEngine:
         view = self._ensure_aggregate("proposal", "active")
         pending = view.get("pending_proposals", {})
         pid = event.aggregate_id
-        pending[pid] = event.payload
+        proposal_data = dict(event.payload)
+        proposal_data.setdefault("status", "pending")
+        proposal_data.setdefault("created_at", event.timestamp.isoformat())
+        pending[pid] = proposal_data
         view["pending_proposals"] = pending
 
     def _on_proposal_accepted(self, event: Event) -> None:
-        """Mark proposal as accepted."""
+        """Mark proposal as accepted. Upserts from payload when pending absent."""
         view = self._ensure_aggregate("proposal", "active")
         pending = view.get("pending_proposals", {})
+        accepted = view.get("accepted_proposals", {})
         pid = event.aggregate_id
+
         if pid in pending:
-            pending[pid]["status"] = "accepted"
-            accepted = view.get("accepted_proposals", {})
-            accepted[pid] = pending.pop(pid)
-            view["accepted_proposals"] = accepted
-            view["pending_proposals"] = pending
+            proposal_data = pending.pop(pid)
+        elif event.payload and event.payload.get("proposal_id"):
+            # Upsert: proposal not in pending but payload carries full data
+            proposal_data = dict(event.payload)
+        else:
+            proposal_data = {"proposal_id": pid}
+
+        proposal_data["status"] = "accepted"
+        proposal_data["accepted_at"] = event.timestamp.isoformat()
+        accepted[pid] = proposal_data
+        view["accepted_proposals"] = accepted
+        view["pending_proposals"] = pending
 
         # Track acceptance history
         history = view.get("acceptance_history", [])
@@ -752,16 +764,24 @@ class StateEngine:
         view["acceptance_history"] = history[-50:]
 
     def _on_proposal_rejected(self, event: Event) -> None:
-        """Mark proposal as rejected."""
+        """Mark proposal as rejected. Upserts from payload when pending absent."""
         view = self._ensure_aggregate("proposal", "active")
         pending = view.get("pending_proposals", {})
+        rejected = view.get("rejected_proposals", {})
         pid = event.aggregate_id
+
         if pid in pending:
-            pending[pid]["status"] = "rejected"
-            rejected = view.get("rejected_proposals", {})
-            rejected[pid] = pending.pop(pid)
-            view["rejected_proposals"] = rejected
-            view["pending_proposals"] = pending
+            proposal_data = pending.pop(pid)
+        elif event.payload and event.payload.get("proposal_id"):
+            proposal_data = dict(event.payload)
+        else:
+            proposal_data = {"proposal_id": pid}
+
+        proposal_data["status"] = "rejected"
+        proposal_data["rejected_at"] = event.timestamp.isoformat()
+        rejected[pid] = proposal_data
+        view["rejected_proposals"] = rejected
+        view["pending_proposals"] = pending
 
         history = view.get("acceptance_history", [])
         history.append({
@@ -772,15 +792,33 @@ class StateEngine:
         view["acceptance_history"] = history[-50:]
 
     def _on_proposal_expired(self, event: Event) -> None:
-        """Clean up expired proposal."""
+        """Mark proposal as expired. Upserts from payload when pending absent."""
         view = self._ensure_aggregate("proposal", "active")
         pending = view.get("pending_proposals", {})
+        expired = view.get("expired_proposals", {})
         pid = event.aggregate_id
+
         if pid in pending:
-            expired = view.get("expired_proposals", {})
-            expired[pid] = pending.pop(pid)
-            view["expired_proposals"] = expired
-            view["pending_proposals"] = pending
+            proposal_data = pending.pop(pid)
+        elif event.payload and event.payload.get("proposal_id"):
+            proposal_data = dict(event.payload)
+        else:
+            proposal_data = {"proposal_id": pid}
+
+        proposal_data["status"] = "expired"
+        proposal_data["expired_at"] = event.timestamp.isoformat()
+        expired[pid] = proposal_data
+        view["expired_proposals"] = expired
+        view["pending_proposals"] = pending
+
+        # Track expiry history
+        history = view.get("expiry_history", [])
+        history.append({
+            "proposal_id": pid,
+            "action": "expired",
+            "timestamp": event.timestamp.isoformat(),
+        })
+        view["expiry_history"] = history[-50:]
 
     def _on_execution_completed(self, event: Event) -> None:
         """Track completed execution."""
@@ -797,6 +835,22 @@ class StateEngine:
         pid = event.aggregate_id
         failed[pid] = event.payload
         view["failed_executions"] = failed
+
+    def get_proposal(self, proposal_id: str) -> dict | None:
+        """Retrieve a proposal dict by ID from the durable proposal aggregate.
+
+        Searches pending, accepted, rejected, and expired collections.
+        Returns the proposal dict or None if not found.
+
+        This reads from the event-sourced proposal/active view and works
+        after StateEngine replay without any process-memory cache.
+        """
+        view = self._ensure_aggregate("proposal", "active")
+        for section in ("pending_proposals", "accepted_proposals", "rejected_proposals", "expired_proposals"):
+            proposals = view.get(section, {})
+            if proposal_id in proposals:
+                return proposals[proposal_id]
+        return None
 
     def _refresh_temporal_views(self) -> None:
         by_day: dict[str, list[str]] = {}

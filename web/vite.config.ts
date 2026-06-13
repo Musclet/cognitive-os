@@ -9,4 +9,9 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
+  server: {
+    proxy: {
+      '/api': 'http://localhost:8081',
+    },
+  },
 })
