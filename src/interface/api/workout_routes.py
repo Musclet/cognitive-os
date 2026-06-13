@@ -10,7 +10,7 @@ from datetime import date, datetime
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
-from src.domain.fitness.plan import WORKOUT_DAYS, WORKOUT_PLAN, get_training_day, is_rest_day, get_weekday_name
+from src.domain.fitness.plan import WORKOUT_PLAN, get_training_day, is_rest_day, get_weekday_name
 from src.domain.fitness.ui_service import (
     add_exercise,
     add_set,
@@ -24,6 +24,7 @@ from src.domain.fitness.ui_service import (
     update_set,
 )
 from src.interface.api.web_routes import COOKIE_NAME, _session_secret, _validate_session
+from src.interface.api.schemas.workout import WorkoutSessionResponse
 
 router = APIRouter()
 
@@ -122,7 +123,7 @@ async def workout_page(request: Request, date: str = Query(default=None)):
 # ── JSON API ───────────────────────────────────────────────────────────────────
 
 
-@router.get("/api/workout/session")
+@router.get("/api/workout/session", response_model=WorkoutSessionResponse)
 async def api_get_session(request: Request, date_str: str | None = Query(default=None, alias="date")):
     """Return session state for a date (or today), plus available day choices."""
     _require_access(request)
@@ -131,7 +132,7 @@ async def api_get_session(request: Request, date_str: str | None = Query(default
     return _session_payload(vault, d)
 
 
-@router.post("/api/workout/session/select")
+@router.post("/api/workout/session/select", response_model=WorkoutSessionResponse)
 async def api_select_session(request: Request, body: dict):
     """Create or select a workout day for a date."""
     _require_access(request)
@@ -151,7 +152,7 @@ async def api_select_session(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/set/update")
+@router.post("/api/workout/set/update", response_model=WorkoutSessionResponse)
 async def api_update_set(request: Request, body: dict):
     """Update one set's checked / weight / reps / rir."""
     _require_access(request)
@@ -172,7 +173,7 @@ async def api_update_set(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/set/add")
+@router.post("/api/workout/set/add", response_model=WorkoutSessionResponse)
 async def api_add_set(request: Request, body: dict):
     """Add a blank set to an exercise."""
     _require_access(request)
@@ -185,7 +186,7 @@ async def api_add_set(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/set/duplicate")
+@router.post("/api/workout/set/duplicate", response_model=WorkoutSessionResponse)
 async def api_duplicate_set(request: Request, body: dict):
     """Duplicate the last set of an exercise."""
     _require_access(request)
@@ -198,7 +199,7 @@ async def api_duplicate_set(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/set/delete")
+@router.post("/api/workout/set/delete", response_model=WorkoutSessionResponse)
 async def api_delete_set(request: Request, body: dict):
     """Delete one set from an exercise."""
     _require_access(request)
@@ -215,7 +216,7 @@ async def api_delete_set(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/exercise/move")
+@router.post("/api/workout/exercise/move", response_model=WorkoutSessionResponse)
 async def api_move_exercise(request: Request, body: dict):
     """Move an exercise block up or down."""
     _require_access(request)
@@ -231,7 +232,7 @@ async def api_move_exercise(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/exercise/update")
+@router.post("/api/workout/exercise/update", response_model=WorkoutSessionResponse)
 async def api_update_exercise(request: Request, body: dict):
     """Update exercise header name and/or notes."""
     _require_access(request)
@@ -251,7 +252,7 @@ async def api_update_exercise(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/exercise/add")
+@router.post("/api/workout/exercise/add", response_model=WorkoutSessionResponse)
 async def api_add_exercise(request: Request, body: dict):
     """Append a custom exercise."""
     _require_access(request)
@@ -279,7 +280,7 @@ async def api_add_exercise(request: Request, body: dict):
     return _session_payload(vault, d, session)
 
 
-@router.post("/api/workout/exercise/delete")
+@router.post("/api/workout/exercise/delete", response_model=WorkoutSessionResponse)
 async def api_delete_exercise(request: Request, body: dict):
     """Delete an exercise block and renumber."""
     _require_access(request)
