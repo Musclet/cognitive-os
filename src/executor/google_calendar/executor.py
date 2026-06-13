@@ -215,10 +215,29 @@ class GoogleCalendarExecutor:
         blocks: list[TimeBlock],
         days: int | None = None,
         calendar_id: str | None = None,
+        *,
+        proposal: Proposal | None = None,
     ) -> dict[str, Any]:
-        """Mirror JWXT schedule blocks into Google Calendar managed events."""
+        """Mirror JWXT schedule blocks into Google Calendar managed events.
+
+        Args:
+            blocks: Temporal blocks to mirror.
+            days: Sync window in days (default from settings).
+            calendar_id: Target calendar ID (default from settings).
+            proposal: Accepted proposal authorizing the write. Required when
+                google_calendar_write_requires_acceptance is True (non-mock).
+
+        Returns:
+            dict with ok=True/False plus created/updated/deleted counts.
+        """
         if not self.use_mock and not self.settings.google_calendar_schedule_write_enabled:
             return {"ok": False, "error": "schedule_calendar_write_disabled"}
+
+        if not self.use_mock and self.settings.google_calendar_write_requires_acceptance:
+            if proposal is None:
+                return {"ok": False, "error": "proposal_required: schedule mirror writes require an accepted proposal"}
+            if proposal.status != ProposalStatus.ACCEPTED:
+                return {"ok": False, "error": "proposal_not_accepted: schedule mirror writes require an accepted proposal"}
 
         days = days or self.settings.google_calendar_schedule_sync_days
         calendar_id = calendar_id or self.settings.google_calendar_schedule_calendar_id

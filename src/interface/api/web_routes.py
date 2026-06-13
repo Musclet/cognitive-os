@@ -3601,7 +3601,7 @@ async def web_sync_jwxt_raw(request: Request):
                     use_mock=settings.google_calendar_mock,
                     settings=settings,
                 )
-                result = await executor.sync_schedule_blocks(time_blocks)
+                result = await executor.sync_schedule_blocks(time_blocks, proposal=None)
                 logger.info("jwxt->gcal mirror: %s", result)
             except Exception as exc:
                 logger.warning("jwxt->gcal mirror failed (non-fatal): %s", exc)

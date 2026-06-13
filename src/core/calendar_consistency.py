@@ -355,6 +355,7 @@ async def repair_calendar_consistency(
                 sync_result = await executor.sync_schedule_blocks(
                     state_engine.get_temporal_blocks(),
                     days=getattr(settings, "google_calendar_schedule_sync_days", 7),
+                    proposal=None,
                 )
                 if sync_result.get("ok"):
                     results["schedule_mirror"] = {
@@ -365,12 +366,20 @@ async def repair_calendar_consistency(
                     }
                 else:
                     err = sync_result.get("error", "unknown")
-                    results["schedule_mirror"] = {
-                        "action": "failed",
-                        "created": 0, "updated": 0, "deleted": 0,
-                        "error": err,
-                    }
-                    results["overall"] = ERROR
+                    # Distinguish proposal-gate refusals from runtime failures
+                    if "proposal_required" in err or "proposal_not_accepted" in err:
+                        results["schedule_mirror"] = {
+                            "action": "skipped",
+                            "created": 0, "updated": 0, "deleted": 0,
+                            "skipped_reason": err,
+                        }
+                    else:
+                        results["schedule_mirror"] = {
+                            "action": "failed",
+                            "created": 0, "updated": 0, "deleted": 0,
+                            "error": err,
+                        }
+                        results["overall"] = ERROR
             except Exception as exc:
                 logger.exception("schedule mirror repair failed")
                 results["schedule_mirror"] = {
