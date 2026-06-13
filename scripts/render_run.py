@@ -10,16 +10,9 @@ os.environ["HTTPS_PROXY"] = ""
 os.environ["NO_PROXY"] = "*"
 
 from src.infrastructure.config import Settings
-from src.storage.db import init_db, close_db
-from src.storage.event_store import EventStore
-from src.storage.snapshot_store import SnapshotStore
-from src.core.bus import EventBus
 from src.core.pipeline import Pipeline
-from src.core.state_engine import StateEngine
-from src.core.tracer import Tracer
-from src.core.safety import DeadLetterQueue
 from src.core.events import Event, EventType, AggregateType
-from src.interface.api.app import create_app
+from src.runtime.composition import build_runtime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("render")
@@ -55,36 +48,11 @@ async def _heartbeat_loop(pipeline: Pipeline) -> None:
 
 async def main():
     settings = Settings()
-    settings.ensure_dirs()
-    settings.apply_env_google_credentials()
-    settings.apply_env_jwxt_cookies()
-
-    await init_db(settings.database_url)
-    event_store = EventStore()
-    snapshot_store = SnapshotStore()
-    dead_letter = DeadLetterQueue()
-    bus = EventBus(event_store=event_store)
-    tracer = Tracer()
-    state_engine = StateEngine(snapshot_path=settings.snapshot_path, snapshot_store=snapshot_store, snapshot_interval=50)
-    pipeline = Pipeline(bus, tracer=tracer)
+    runtime = await build_runtime(settings, mode="render")
+    bus = runtime.bus
+    pipeline = runtime.pipeline
 
     # Restore state
-    try:
-        events = await event_store.replay_all()
-        if events:
-            await state_engine.rebuild_from_events(events)
-            logger.info("state restored: %d events", len(events))
-        else:
-            state_engine.load_snapshot()
-    except Exception:
-        logger.exception("state restore failed, trying snapshot")
-        state_engine.load_snapshot()
-
-    # Wire state engine to the bus so every published event is applied in real time
-    for event_type in EventType:
-        bus.subscribe(event_type, state_engine.apply)
-    logger.info("state engine subscribed to %d event types", len(EventType))
-
     # Wire Google Calendar connector for read-only sync
     from src.connector.google_calendar.client import GoogleCalendarConnector
     gcal = GoogleCalendarConnector(settings=settings)
@@ -98,14 +66,9 @@ async def main():
     logger.info("jwxt connector subscribed, mock=%s", settings.jwxt_mock)
 
     # Build app
-    app = create_app(
-        event_store=event_store, state_engine=state_engine,
-        snapshot_store=snapshot_store, pipeline=pipeline,
-        tracer=tracer, dead_letter=dead_letter,
-        web_ui_dist_path=str(Path(__file__).parent.parent / "web" / "dist"),
-        settings=settings,
-    )
-    app.state.settings = settings
+    app = runtime.app
+    if app is None:
+        raise RuntimeError("render runtime did not create the API app")
 
     # Start embedded worker heartbeat as a background task
     heartbeat_task = asyncio.create_task(_heartbeat_loop(pipeline))
@@ -123,6 +86,7 @@ async def main():
             await heartbeat_task
         except asyncio.CancelledError:
             pass
+        await runtime.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
