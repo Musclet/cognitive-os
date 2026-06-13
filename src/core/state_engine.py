@@ -38,6 +38,7 @@ class StateEngine:
         self._active_temporal_context: dict[str, Any] = {}
         self._busy_windows: list[dict[str, Any]] = []
         self._recovery_windows: list[dict[str, Any]] = []
+        self._pending_temporal_syncs: dict[str, dict[str, Any]] = {}
         self._applied_event_ids: set[UUID] = set()
         self._applied_count: int = 0
         self._as_of: datetime | None = None
@@ -147,6 +148,16 @@ class StateEngine:
             "active_temporal_context": self._active_temporal_context,
             "busy_windows": self._busy_windows,
             "recovery_windows": self._recovery_windows,
+            "pending_temporal_syncs": {
+                source: {
+                    **sync,
+                    "blocks": {
+                        key: block.to_dict()
+                        for key, block in sync.get("blocks", {}).items()
+                    },
+                }
+                for source, sync in self._pending_temporal_syncs.items()
+            },
             "applied_event_ids": sorted(str(event_id) for event_id in self._applied_event_ids),
             "applied_count": self._applied_count,
             "as_of": self._as_of.isoformat() if self._as_of else None,
@@ -187,6 +198,7 @@ class StateEngine:
         self._active_temporal_context = {}
         self._busy_windows = []
         self._recovery_windows = []
+        self._pending_temporal_syncs = {}
         self._applied_event_ids = set()
         self._applied_count = 0
         self._as_of = None
@@ -236,6 +248,7 @@ class StateEngine:
             self._active_temporal_context = {}
             self._busy_windows = []
             self._recovery_windows = []
+            self._pending_temporal_syncs = {}
             self._applied_event_ids = set()
             self._applied_count = fallback_count
             self._as_of = None
@@ -252,6 +265,16 @@ class StateEngine:
         self._active_temporal_context = data.get("active_temporal_context", {})
         self._busy_windows = data.get("busy_windows", [])
         self._recovery_windows = data.get("recovery_windows", [])
+        self._pending_temporal_syncs = {
+            source: {
+                **sync,
+                "blocks": {
+                    key: TimeBlock.from_dict(block)
+                    for key, block in sync.get("blocks", {}).items()
+                },
+            }
+            for source, sync in data.get("pending_temporal_syncs", {}).items()
+        }
         self._applied_event_ids = {
             UUID(event_id)
             for event_id in data.get("applied_event_ids", [])
@@ -426,6 +449,16 @@ class StateEngine:
                 block.start.isoformat(),
                 block.end.isoformat(),
             ])
+            trace_id = str(event.metadata.get("trace_id", ""))
+            pending = self._pending_temporal_syncs.get(str(block.source))
+            if (
+                str(block.source) == "google_calendar"
+                and pending
+                and trace_id
+                and trace_id == pending.get("trace_id")
+            ):
+                pending["blocks"][block_key] = block
+                return
             self._temporal_blocks[block_key] = block
             self._refresh_temporal_views()
             self._derived_dirty = True
@@ -467,15 +500,12 @@ class StateEngine:
         self._update_sync_health(event, "running")
         if event.payload.get("source") != "google_calendar":
             return
-        stale_keys = [
-            key for key, existing in self._temporal_blocks.items()
-            if str(getattr(existing, "source", "")) == "google_calendar"
-        ]
-        for key in stale_keys:
-            self._temporal_blocks.pop(key, None)
-        self._refresh_temporal_views()
-        if stale_keys:
-            self._derived_dirty = True
+        trace_id = str(event.metadata.get("trace_id", ""))
+        self._pending_temporal_syncs["google_calendar"] = {
+            "trace_id": trace_id,
+            "calendar_id": event.payload.get("calendar_id", ""),
+            "blocks": {},
+        }
         temporal = self._ensure_aggregate("temporal", "projection")
         temporal["calendar_sync"] = {
             **temporal.get("calendar_sync", {}),
@@ -486,10 +516,34 @@ class StateEngine:
         }
 
     def _on_connector_fetch_completed(self, event: Event) -> None:
-        self._update_sync_health(event, "completed")
-        if event.payload.get("source") != "google_calendar":
+        source = event.payload.get("source")
+        if source != "google_calendar":
+            self._update_sync_health(event, "completed")
             return
-        if int(event.payload.get("count", 0) or 0) == 0:
+        trace_id = str(event.metadata.get("trace_id", ""))
+        pending = self._pending_temporal_syncs.get("google_calendar")
+        if (
+            pending is not None
+            and trace_id
+            and trace_id != pending.get("trace_id")
+        ):
+            return
+        self._update_sync_health(event, "completed")
+        can_commit = pending is not None and (
+            not trace_id or trace_id == pending.get("trace_id")
+        )
+        if can_commit:
+            stale_keys = [
+                key for key, existing in self._temporal_blocks.items()
+                if str(getattr(existing, "source", "")) == "google_calendar"
+            ]
+            for key in stale_keys:
+                self._temporal_blocks.pop(key, None)
+            self._temporal_blocks.update(pending.get("blocks", {}))
+            self._pending_temporal_syncs.pop("google_calendar", None)
+            self._refresh_temporal_views()
+            self._derived_dirty = True
+        elif pending is None and int(event.payload.get("count", 0) or 0) == 0:
             stale_keys = [
                 key for key, existing in self._temporal_blocks.items()
                 if str(getattr(existing, "source", "")) == "google_calendar"
@@ -512,7 +566,21 @@ class StateEngine:
         }
 
     def _on_connector_fetch_failed(self, event: Event) -> None:
+        source = event.payload.get("source")
+        if source != "google_calendar":
+            self._update_sync_health(event, "failed")
+            return
+        trace_id = str(event.metadata.get("trace_id", ""))
+        pending = self._pending_temporal_syncs.get("google_calendar")
+        if (
+            pending is not None
+            and trace_id
+            and trace_id != pending.get("trace_id")
+        ):
+            return
         self._update_sync_health(event, "failed")
+        if pending is not None:
+            self._pending_temporal_syncs.pop("google_calendar", None)
 
     def _on_temporal_block_updated(self, event: Event) -> None:
         self._on_temporal_block_added(event)
@@ -522,6 +590,22 @@ class StateEngine:
         try:
             block = TimeBlock.from_dict(event.payload)
         except Exception:
+            return
+        trace_id = str(event.metadata.get("trace_id", ""))
+        pending = self._pending_temporal_syncs.get(str(block.source))
+        if (
+            str(block.source) == "google_calendar"
+            and pending
+            and trace_id
+            and trace_id == pending.get("trace_id")
+        ):
+            external_id = (block.metadata or {}).get("external_id")
+            if external_id:
+                pending["blocks"] = {
+                    key: existing
+                    for key, existing in pending.get("blocks", {}).items()
+                    if (getattr(existing, "metadata", {}) or {}).get("external_id") != external_id
+                }
             return
         to_remove = []
         for key, existing in self._temporal_blocks.items():

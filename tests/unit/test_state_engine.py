@@ -106,6 +106,51 @@ async def test_snapshot_roundtrip():
         print("✓ snapshot roundtrip")
 
 
+async def test_snapshot_roundtrip_preserves_pending_calendar_sync():
+    with tempfile.TemporaryDirectory() as tmp:
+        snap_path = Path(tmp) / "state.json"
+        engine = StateEngine(snapshot_path=str(snap_path))
+        start = datetime(2026, 6, 15, 8, 0, tzinfo=timezone.utc)
+
+        await engine.apply(Event(
+            event_type=EventType.CONNECTOR_FETCH_STARTED,
+            aggregate_id="calendar-sync",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={"source": "google_calendar", "calendar_id": "primary"},
+            metadata={"trace_id": "snapshot-sync"},
+        ))
+        await engine.apply(Event(
+            event_type=EventType.TEMPORAL_BLOCK_ADDED,
+            aggregate_id="snapshot-calendar-block",
+            aggregate_type=AggregateType.TEMPORAL,
+            payload={
+                "block_id": "snapshot-calendar-block",
+                "source": "google_calendar",
+                "block_type": "calendar_event",
+                "start": start.isoformat(),
+                "end": (start + timedelta(hours=1)).isoformat(),
+                "title": "Pending calendar event",
+            },
+            metadata={"trace_id": "snapshot-sync"},
+        ))
+        engine.save_snapshot()
+
+        restored = StateEngine(snapshot_path=str(snap_path))
+        assert restored.load_snapshot()
+        assert restored.get_temporal_blocks() == []
+        await restored.apply(Event(
+            event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+            aggregate_id="calendar-sync",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={"source": "google_calendar", "count": 1},
+            metadata={"trace_id": "snapshot-sync"},
+        ))
+
+        assert [block.title for block in restored.get_temporal_blocks()] == [
+            "Pending calendar event"
+        ]
+
+
 async def test_intervention_button_feedback_updates_behavior():
     engine = StateEngine()
 

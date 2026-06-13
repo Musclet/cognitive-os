@@ -314,6 +314,155 @@ async def test_google_calendar_zero_sync_clears_stale_blocks():
     ] == []
 
 
+async def test_google_calendar_failed_sync_preserves_last_known_good():
+    engine = StateEngine()
+    now = datetime.now(timezone.utc)
+    old = TimeBlock(
+        "gcal-old",
+        TemporalSource.GOOGLE_CALENDAR,
+        TimeBlockType.CALENDAR_EVENT,
+        now + timedelta(hours=1),
+        now + timedelta(hours=2),
+        "Existing event",
+    )
+    await engine.apply(Event(
+        event_type=EventType.TEMPORAL_BLOCK_ADDED,
+        aggregate_id=old.block_id,
+        aggregate_type=AggregateType.TEMPORAL,
+        payload=old.to_dict(),
+    ))
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_STARTED,
+        aggregate_id="calendar-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "google_calendar", "calendar_id": "primary"},
+        metadata={"trace_id": "failed-sync"},
+    ))
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_FAILED,
+        aggregate_id="calendar-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "google_calendar", "error": "network"},
+        metadata={"trace_id": "failed-sync"},
+    ))
+
+    blocks = [
+        block for block in engine.get_temporal_blocks()
+        if str(block.source) == "google_calendar"
+    ]
+    assert [block.title for block in blocks] == ["Existing event"]
+
+
+async def test_google_calendar_success_atomically_replaces_source_snapshot():
+    engine = StateEngine()
+    now = datetime.now(timezone.utc)
+    old = TimeBlock(
+        "gcal-old",
+        TemporalSource.GOOGLE_CALENDAR,
+        TimeBlockType.CALENDAR_EVENT,
+        now + timedelta(hours=1),
+        now + timedelta(hours=2),
+        "Old event",
+    )
+    new = TimeBlock(
+        "gcal-new",
+        TemporalSource.GOOGLE_CALENDAR,
+        TimeBlockType.CALENDAR_EVENT,
+        now + timedelta(hours=3),
+        now + timedelta(hours=4),
+        "New event",
+    )
+    await engine.apply(Event(
+        event_type=EventType.TEMPORAL_BLOCK_ADDED,
+        aggregate_id=old.block_id,
+        aggregate_type=AggregateType.TEMPORAL,
+        payload=old.to_dict(),
+    ))
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_STARTED,
+        aggregate_id="calendar-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "google_calendar", "calendar_id": "primary"},
+        metadata={"trace_id": "successful-sync"},
+    ))
+    await engine.apply(Event(
+        event_type=EventType.TEMPORAL_BLOCK_ADDED,
+        aggregate_id=new.block_id,
+        aggregate_type=AggregateType.TEMPORAL,
+        payload=new.to_dict(),
+        metadata={"trace_id": "successful-sync", "source": "google_calendar"},
+    ))
+
+    before_commit = [
+        block.title for block in engine.get_temporal_blocks()
+        if str(block.source) == "google_calendar"
+    ]
+    assert before_commit == ["Old event"]
+
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+        aggregate_id="calendar-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "google_calendar", "count": 1},
+        metadata={"trace_id": "successful-sync"},
+    ))
+    after_commit = [
+        block.title for block in engine.get_temporal_blocks()
+        if str(block.source) == "google_calendar"
+    ]
+    assert after_commit == ["New event"]
+
+
+async def test_google_calendar_late_events_do_not_discard_newer_sync():
+    engine = StateEngine()
+    now = datetime.now(timezone.utc)
+    old = TimeBlock(
+        "gcal-old",
+        TemporalSource.GOOGLE_CALENDAR,
+        TimeBlockType.CALENDAR_EVENT,
+        now + timedelta(hours=1),
+        now + timedelta(hours=2),
+        "Existing event",
+    )
+    await engine.apply(Event(
+        event_type=EventType.TEMPORAL_BLOCK_ADDED,
+        aggregate_id=old.block_id,
+        aggregate_type=AggregateType.TEMPORAL,
+        payload=old.to_dict(),
+    ))
+    for trace_id in ("older-sync", "newer-sync"):
+        await engine.apply(Event(
+            event_type=EventType.CONNECTOR_FETCH_STARTED,
+            aggregate_id="calendar-sync",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={"source": "google_calendar"},
+            metadata={"trace_id": trace_id},
+        ))
+
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_FAILED,
+        aggregate_id="calendar-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "google_calendar", "error": "late failure"},
+        metadata={"trace_id": "older-sync"},
+    ))
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+        aggregate_id="calendar-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "google_calendar", "count": 0},
+        metadata={"trace_id": "older-sync"},
+    ))
+
+    assert engine._pending_temporal_syncs["google_calendar"]["trace_id"] == "newer-sync"
+    assert engine.get_all("sync")["google_calendar"]["status"] == "running"
+    blocks = [
+        block.title for block in engine.get_temporal_blocks()
+        if str(block.source) == "google_calendar"
+    ]
+    assert blocks == ["Existing event"]
+
+
 async def test_temporal_context_tracks_next_workout():
     engine = StateEngine()
     now = datetime.now(timezone.utc)
