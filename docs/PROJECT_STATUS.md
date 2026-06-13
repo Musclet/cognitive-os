@@ -9,8 +9,8 @@ Working branch: `codex/project-audit-refactor`
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `908 passed` |
-| Calendar/replay/stabilization regression | `49 passed` |
+| Python tests | `910 passed` |
+| Temporal/replay/stabilization regression | `51 passed` |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src`) | PASS |
 | Full Ruff | 228 pre-existing findings at audit start |
@@ -43,6 +43,8 @@ batch.
 - Preserved last-known-good Google Calendar blocks across failed reads.
 - Made successful Google Calendar reads atomically replace the source snapshot,
   including trace isolation and pending-sync snapshot recovery.
+- Added a traced JWXT fetch lifecycle and atomically reconciled successful
+  timetable snapshots while preserving the last-known-good state on failure.
 
 ## Priority Risk Queue
 
@@ -54,10 +56,9 @@ batch.
 
 ### P1 Next
 
-1. JWXT refresh adds blocks but does not reconcile removed or changed classes.
-2. Render and local runtimes use different dependency composition.
-3. EventBus logs and swallows handler failures; DLQ instances are inconsistent.
-4. Approval and undo state is partly held in interface-process memory.
+1. Render and local runtimes use different dependency composition.
+2. EventBus logs and swallows handler failures; DLQ instances are inconsistent.
+3. Approval and undo state is partly held in interface-process memory.
 
 ### P2 Planned
 
@@ -71,7 +72,7 @@ batch.
 
 ## Next Safe Batch
 
-The next agent should make JWXT refreshes reconcile a complete source snapshot:
-removed classes must disappear, changed classes must replace their prior
-blocks, and failed reads must retain the last-known-good timetable. Reuse the
-trace-scoped staging pattern now used for Google Calendar.
+The next agent should make Render and local entry points use the same
+dependency-composition path. First inventory which handlers, stores, sinks, and
+feature gates differ, then add a composition contract test before consolidating
+startup wiring.

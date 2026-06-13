@@ -130,12 +130,15 @@ async def test_jwxt_handle_fetch_request():
         payload={"source": "jwxt", "query": "weekly_schedule"},
     )
     result = await conn.handle_fetch_request(event)
+    started_events = [e for e in result if e.event_type == EventType.CONNECTOR_FETCH_STARTED]
     block_events = [e for e in result if e.event_type == EventType.TEMPORAL_BLOCK_ADDED]
     course_events = [e for e in result if e.event_type == EventType.COURSE_ACTIVATED]
     completed_events = [e for e in result if e.event_type == EventType.CONNECTOR_FETCH_COMPLETED]
+    assert len(started_events) == 1
     assert len(block_events) == 9
     assert len(course_events) == 6
     assert len(completed_events) == 1
+    assert {e.metadata["trace_id"] for e in result} == {str(event.event_id)}
     print("✓ JWXT handle_fetch_request emits schedule, course activation, and completion events")
 
 
@@ -461,6 +464,94 @@ async def test_google_calendar_late_events_do_not_discard_newer_sync():
         if str(block.source) == "google_calendar"
     ]
     assert blocks == ["Existing event"]
+
+
+async def test_jwxt_success_atomically_replaces_source_snapshot():
+    engine = StateEngine()
+    now = datetime.now(timezone.utc)
+    old = TimeBlock(
+        "jwxt-old",
+        TemporalSource.JWXT,
+        TimeBlockType.CLASS_LECTURE,
+        now + timedelta(hours=1),
+        now + timedelta(hours=2),
+        "Old class",
+    )
+    new = TimeBlock(
+        "jwxt-new",
+        TemporalSource.JWXT,
+        TimeBlockType.CLASS_LECTURE,
+        now + timedelta(hours=3),
+        now + timedelta(hours=4),
+        "New class",
+    )
+    await engine.apply(Event(
+        event_type=EventType.TEMPORAL_BLOCK_ADDED,
+        aggregate_id=old.block_id,
+        aggregate_type=AggregateType.TEMPORAL,
+        payload=old.to_dict(),
+    ))
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_STARTED,
+        aggregate_id="jwxt-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "jwxt"},
+        metadata={"trace_id": "jwxt-success"},
+    ))
+    await engine.apply(Event(
+        event_type=EventType.TEMPORAL_BLOCK_ADDED,
+        aggregate_id=new.block_id,
+        aggregate_type=AggregateType.TEMPORAL,
+        payload=new.to_dict(),
+        metadata={"trace_id": "jwxt-success"},
+    ))
+    assert [block.title for block in engine.get_temporal_blocks()] == ["Old class"]
+
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+        aggregate_id="jwxt-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "jwxt", "block_count": 1},
+        metadata={"trace_id": "jwxt-success"},
+    ))
+    assert [block.title for block in engine.get_temporal_blocks()] == ["New class"]
+
+
+async def test_jwxt_failed_sync_preserves_last_known_good():
+    engine = StateEngine()
+    now = datetime.now(timezone.utc)
+    old = TimeBlock(
+        "jwxt-old",
+        TemporalSource.JWXT,
+        TimeBlockType.CLASS_LECTURE,
+        now + timedelta(hours=1),
+        now + timedelta(hours=2),
+        "Existing class",
+    )
+    await engine.apply(Event(
+        event_type=EventType.TEMPORAL_BLOCK_ADDED,
+        aggregate_id=old.block_id,
+        aggregate_type=AggregateType.TEMPORAL,
+        payload=old.to_dict(),
+    ))
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_STARTED,
+        aggregate_id="jwxt-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "jwxt"},
+        metadata={"trace_id": "jwxt-failure"},
+    ))
+    await engine.apply(Event(
+        event_type=EventType.CONNECTOR_FETCH_FAILED,
+        aggregate_id="jwxt-sync",
+        aggregate_type=AggregateType.SYSTEM,
+        payload={"source": "jwxt", "error": "network"},
+        metadata={"trace_id": "jwxt-failure"},
+    ))
+
+    assert [block.title for block in engine.get_temporal_blocks()] == [
+        "Existing class"
+    ]
 
 
 async def test_temporal_context_tracks_next_workout():

@@ -432,6 +432,21 @@ class StateEngine:
         from datetime import timedelta
         try:
             block = TimeBlock.from_dict(event.payload)
+            block_key = "|".join([
+                str(block.source),
+                block.title,
+                block.start.isoformat(),
+                block.end.isoformat(),
+            ])
+            trace_id = str(event.metadata.get("trace_id", ""))
+            pending = self._pending_temporal_syncs.get(str(block.source))
+            if (
+                pending
+                and trace_id
+                and trace_id == pending.get("trace_id")
+            ):
+                pending["blocks"][block_key] = block
+                return
             if str(block.source) == "jwxt" and block.metadata.get("teaching_week"):
                 week_start = block.start.date() - timedelta(days=block.start.weekday())
                 week_end = week_start + timedelta(days=7)
@@ -443,22 +458,6 @@ class StateEngine:
                 ]
                 for key in stale_keys:
                     self._temporal_blocks.pop(key, None)
-            block_key = "|".join([
-                str(block.source),
-                block.title,
-                block.start.isoformat(),
-                block.end.isoformat(),
-            ])
-            trace_id = str(event.metadata.get("trace_id", ""))
-            pending = self._pending_temporal_syncs.get(str(block.source))
-            if (
-                str(block.source) == "google_calendar"
-                and pending
-                and trace_id
-                and trace_id == pending.get("trace_id")
-            ):
-                pending["blocks"][block_key] = block
-                return
             self._temporal_blocks[block_key] = block
             self._refresh_temporal_views()
             self._derived_dirty = True
@@ -498,14 +497,17 @@ class StateEngine:
     def _on_connector_fetch_started(self, event: Event) -> None:
         """Prepare source-owned temporal state before a fresh connector read."""
         self._update_sync_health(event, "running")
-        if event.payload.get("source") != "google_calendar":
+        source = str(event.payload.get("source", ""))
+        if source not in {"google_calendar", "jwxt"}:
             return
         trace_id = str(event.metadata.get("trace_id", ""))
-        self._pending_temporal_syncs["google_calendar"] = {
+        self._pending_temporal_syncs[source] = {
             "trace_id": trace_id,
             "calendar_id": event.payload.get("calendar_id", ""),
             "blocks": {},
         }
+        if source != "google_calendar":
+            return
         temporal = self._ensure_aggregate("temporal", "projection")
         temporal["calendar_sync"] = {
             **temporal.get("calendar_sync", {}),
@@ -516,12 +518,12 @@ class StateEngine:
         }
 
     def _on_connector_fetch_completed(self, event: Event) -> None:
-        source = event.payload.get("source")
-        if source != "google_calendar":
+        source = str(event.payload.get("source", ""))
+        if source not in {"google_calendar", "jwxt"}:
             self._update_sync_health(event, "completed")
             return
         trace_id = str(event.metadata.get("trace_id", ""))
-        pending = self._pending_temporal_syncs.get("google_calendar")
+        pending = self._pending_temporal_syncs.get(source)
         if (
             pending is not None
             and trace_id
@@ -535,15 +537,19 @@ class StateEngine:
         if can_commit:
             stale_keys = [
                 key for key, existing in self._temporal_blocks.items()
-                if str(getattr(existing, "source", "")) == "google_calendar"
+                if str(getattr(existing, "source", "")) == source
             ]
             for key in stale_keys:
                 self._temporal_blocks.pop(key, None)
             self._temporal_blocks.update(pending.get("blocks", {}))
-            self._pending_temporal_syncs.pop("google_calendar", None)
+            self._pending_temporal_syncs.pop(source, None)
             self._refresh_temporal_views()
             self._derived_dirty = True
-        elif pending is None and int(event.payload.get("count", 0) or 0) == 0:
+        elif (
+            source == "google_calendar"
+            and pending is None
+            and int(event.payload.get("count", 0) or 0) == 0
+        ):
             stale_keys = [
                 key for key, existing in self._temporal_blocks.items()
                 if str(getattr(existing, "source", "")) == "google_calendar"
@@ -553,6 +559,8 @@ class StateEngine:
             if stale_keys:
                 self._refresh_temporal_views()
                 self._derived_dirty = True
+        if source != "google_calendar":
+            return
         temporal = self._ensure_aggregate("temporal", "projection")
         temporal["calendar_sync"] = {
             "status": "completed",
@@ -566,12 +574,12 @@ class StateEngine:
         }
 
     def _on_connector_fetch_failed(self, event: Event) -> None:
-        source = event.payload.get("source")
-        if source != "google_calendar":
+        source = str(event.payload.get("source", ""))
+        if source not in {"google_calendar", "jwxt"}:
             self._update_sync_health(event, "failed")
             return
         trace_id = str(event.metadata.get("trace_id", ""))
-        pending = self._pending_temporal_syncs.get("google_calendar")
+        pending = self._pending_temporal_syncs.get(source)
         if (
             pending is not None
             and trace_id
@@ -580,7 +588,7 @@ class StateEngine:
             return
         self._update_sync_health(event, "failed")
         if pending is not None:
-            self._pending_temporal_syncs.pop("google_calendar", None)
+            self._pending_temporal_syncs.pop(source, None)
 
     def _on_temporal_block_updated(self, event: Event) -> None:
         self._on_temporal_block_added(event)
@@ -594,8 +602,7 @@ class StateEngine:
         trace_id = str(event.metadata.get("trace_id", ""))
         pending = self._pending_temporal_syncs.get(str(block.source))
         if (
-            str(block.source) == "google_calendar"
-            and pending
+            pending
             and trace_id
             and trace_id == pending.get("trace_id")
         ):
