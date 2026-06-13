@@ -9,12 +9,12 @@ Working branch: `codex/project-audit-refactor`
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `910 passed` |
+| Python tests | `916 passed, 134 warnings` |
 | Temporal/replay/stabilization regression | `51 passed` |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src`) | PASS |
 | Full Ruff | 228 pre-existing findings at audit start |
-| npm audit | 2 dev-tool findings: Vite/esbuild, major upgrade required |
+| npm install audit | 2 findings: 1 moderate, 1 high |
 
 The Web production bundle is about 993 KB minified and should later be split
 by route and explicit icon imports.
@@ -45,6 +45,15 @@ batch.
   including trace isolation and pending-sync snapshot recovery.
 - Added a traced JWXT fetch lifecycle and atomically reconciled successful
   timetable snapshots while preserving the last-known-good state on failure.
+- Removed wall-clock fallbacks from derived-state replay paths.
+- Added a shared runtime composition root for local, Render, and worker modes.
+- Made EventBus handler failures durable through the shared DLQ and observable
+  through `system.event_failed` events while allowing healthy handlers to run.
+- Added immutable event metadata updates for cascade tracing.
+- Moved active dashboard, finance command, finance undo, and calendar conflict
+  behavior into domain services.
+- Added typed response models for dashboard, finance, calendar proposal,
+  workout, and mobile dashboard routes.
 
 ## Priority Risk Queue
 
@@ -56,23 +65,26 @@ batch.
 
 ### P1 Next
 
-1. Render and local runtimes use different dependency composition.
-2. EventBus logs and swallows handler failures; DLQ instances are inconsistent.
-3. Approval and undo state is partly held in interface-process memory.
+1. Approval and recent-action undo state is partly held in interface-process
+   memory.
+2. The Web route module still contains unreachable legacy dashboard, finance,
+   and conflict implementations after the active paths moved to domain
+   services.
+3. Some API routes still return untyped dictionaries.
 
 ### P2 Planned
 
 - Move blocking Google SDK calls off the asyncio event loop.
 - Add a managed background-task registry and shutdown cancellation.
-- Introduce typed API response models and generated TypeScript contracts.
-- Split the large API/Telegram modules by use case.
+- Generate TypeScript contracts from the typed API response models.
+- Continue splitting the large API/Telegram modules by use case.
 - Resolve the legacy root-level derived-state engine.
 - Reduce the full Ruff backlog without mixing formatting and behavior changes.
 - Upgrade Vite/esbuild in a dedicated Web-toolchain compatibility batch.
 
 ## Next Safe Batch
 
-The next agent should make Render and local entry points use the same
-dependency-composition path. First inventory which handlers, stores, sinks, and
-feature gates differ, then add a composition contract test before consolidating
-startup wiring.
+Persist proposal approval and recent-action undo state in the event-sourced
+model. Keep the existing API behavior stable, add restart/replay tests first,
+then remove the process-memory stores and the unreachable legacy Web route
+implementations in a separate cleanup commit.

@@ -36,23 +36,28 @@ acceptance.
 | Connectors | `src/connector/` | Read-only external ingestion |
 | Executors | `src/executor/` | Approval-gated external writes |
 | Interfaces | `src/interface/` | FastAPI and Telegram adapters |
-| Runtime composition | `scripts/run.py`, `scripts/render_run.py` | Dependency wiring and lifecycle |
+| Runtime composition | `src/runtime/composition.py` | Shared dependency wiring, capabilities, and lifecycle |
 | Web UI | `web/src/` | React PWA |
 
-## Current Composition Gap
+## Runtime Modes
 
-`scripts/run.py` is the complete local composition. `scripts/render_run.py`
-currently wires only the StateEngine, JWXT/Google Calendar connectors, web API,
-and heartbeat. Scheduler, Telegram, watchdog, legacy derived engine, and
-several domain handlers are not present in the Render web process.
+`build_runtime()` creates the same core stores, EventBus, StateEngine,
+Pipeline, tracer, scheduler, and dead-letter queue for all entry points.
+Explicit mode capabilities decide which optional interfaces and background
+services start in local, Render, and worker processes.
 
-Until a shared composition root exists, verify the active entry point before
-debugging behavior.
+All event types are subscribed to the StateEngine at the composition root.
+Handler failures are written to the shared DLQ and produce a
+`system.event_failed` event. Delivery then continues to healthy handlers.
 
 ## Known Boundary Debt
 
-- `src/interface/api/web_routes.py` and `src/interface/telegram/bot.py` contain
-  business orchestration and in-memory interaction state.
+- `src/interface/api/web_routes.py` and `src/interface/telegram/bot.py` retain
+  some business orchestration and in-memory interaction state. Active
+  dashboard, finance, finance-undo, and calendar-conflict paths now delegate
+  to `src/domain/`.
+- `src/interface/api/web_routes.py` still contains unreachable legacy helper
+  implementations pending a behavior-neutral cleanup.
 - A legacy root-level `derived_state/` engine coexists with
   `src/derived_state/`.
 - Some background tasks are created without a shared lifecycle registry.
