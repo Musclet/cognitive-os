@@ -2829,3 +2829,96 @@ class TestSystemAction:
             cookies={COOKIE_NAME: cookie},
         )
         assert resp.status_code == 503
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Local dev defaults — WEB_UI_PIN=123456
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestLocalDevDefaults:
+    """Login with local dev defaults (PIN=123456, cookie_secure=False)."""
+
+    @pytest.fixture
+    def dev_app(self) -> FastAPI:
+        from src.infrastructure.config import Settings
+        app = FastAPI()
+        app.include_router(web_router)
+        settings = Settings()
+        settings.web_ui_pin = "123456"
+        settings.web_ui_session_secret = "local-dev-session-secret"
+        settings.web_ui_session_days = 7
+        settings.web_ui_cookie_secure = False
+        settings.obsidian_vault_path = ""
+        settings.telegram_allowed_users = [123]
+        app.state.settings = settings
+        se = MagicMock()
+        se._state = {}
+        se.get_all_derived.return_value = {
+            "deadline_pressure": {"score": 0.0}, "workload_density": {"score": 0.0},
+            "active_context": {"active_course_count": 0},
+        }
+        app.state.state_engine = se
+        pipeline = MagicMock()
+        pipeline.run = AsyncMock(return_value=[])
+        app.state.pipeline = pipeline
+        return app
+
+    @pytest.fixture
+    def dev_client(self, dev_app: FastAPI) -> TestClient:
+        return TestClient(dev_app)
+
+    def test_login_dev_pin_success(self, dev_client: TestClient):
+        resp = dev_client.post("/api/web/auth/login", json={"pin": "123456"})
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "ok"
+        assert COOKIE_NAME in resp.cookies
+
+    def test_login_wrong_pin_401(self, dev_client: TestClient):
+        resp = dev_client.post("/api/web/auth/login", json={"pin": "0000"})
+        assert resp.status_code == 401
+        assert "invalid_pin" in resp.json().get("detail", "")
+
+    def test_cookie_set_with_secure_false(self, dev_client: TestClient):
+        resp = dev_client.post("/api/web/auth/login", json={"pin": "123456"})
+        assert resp.status_code == 200
+        assert COOKIE_NAME in resp.cookies
+
+    def test_auth_check_after_dev_login(self, dev_client: TestClient):
+        r = dev_client.post("/api/web/auth/login", json={"pin": "123456"})
+        cookie = r.cookies[COOKIE_NAME]
+        resp = dev_client.get("/api/web/auth/check", cookies={COOKIE_NAME: cookie})
+        assert resp.status_code == 200
+
+
+class TestSettingsNoDefaultPin:
+    """Settings class itself must not ship a production PIN."""
+
+    def test_default_pin_empty(self):
+        from src.infrastructure.config import Settings
+        s = Settings(_env_file="")
+        assert not s.web_ui_pin
+
+    def test_default_cookie_secure_true(self):
+        from src.infrastructure.config import Settings
+        s = Settings(_env_file="")
+        assert s.web_ui_cookie_secure is True
+
+    def test_no_pin_configured_returns_503(self):
+        from src.infrastructure.config import Settings
+        app = FastAPI()
+        app.include_router(web_router)
+        settings = Settings(_env_file="")
+        settings.web_ui_pin = ""
+        settings.web_ui_session_secret = "t"
+        app.state.settings = settings
+        se = MagicMock()
+        se._state = {}
+        app.state.state_engine = se
+        pipeline = MagicMock()
+        pipeline.run = AsyncMock(return_value=[])
+        app.state.pipeline = pipeline
+        client = TestClient(app)
+        resp = client.post("/api/web/auth/login", json={"pin": "123456"})
+        assert resp.status_code == 503
+        assert "web_ui_pin_not_configured" in resp.json().get("detail", "")
