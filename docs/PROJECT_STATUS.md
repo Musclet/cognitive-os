@@ -9,7 +9,7 @@ Working branch: `codex/project-audit-refactor`
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `900 passed` |
+| Python tests | `902 passed` |
 | Replay and stabilization | `6 passed` |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src`) | PASS |
@@ -35,6 +35,8 @@ batch.
 - Stopped the Service Worker from caching authenticated API responses.
 - Disabled automatic Google Calendar schedule writes in the Render blueprint.
 - Added CI, repository entry documentation, and agent handoff rules.
+- Made time-sensitive derived state use the latest event timestamp.
+- Added replay tests for event-time deadlines and read-order independence.
 
 ## Priority Risk Queue
 
@@ -46,14 +48,12 @@ batch.
 
 ### P1 Next
 
-1. Derived-state replay uses wall-clock time and can produce different hashes.
-2. `state_hash()` can mutate lazy derived state; reads are not observationally pure.
-3. Snapshots omit temporal projections and do not form complete recovery points.
-4. Google Calendar fetch start removes last-known-good blocks before success.
-5. JWXT refresh adds blocks but does not reconcile removed or changed classes.
-6. Render and local runtimes use different dependency composition.
-7. EventBus logs and swallows handler failures; DLQ instances are inconsistent.
-8. Approval and undo state is partly held in interface-process memory.
+1. Snapshots omit temporal projections and do not form complete recovery points.
+2. Google Calendar fetch start removes last-known-good blocks before success.
+3. JWXT refresh adds blocks but does not reconcile removed or changed classes.
+4. Render and local runtimes use different dependency composition.
+5. EventBus logs and swallows handler failures; DLQ instances are inconsistent.
+6. Approval and undo state is partly held in interface-process memory.
 
 ### P2 Planned
 
@@ -67,7 +67,8 @@ batch.
 
 ## Next Safe Batch
 
-The next agent should write failing tests for deterministic `as_of` handling
-and observationally pure `state_hash()` before modifying StateEngine or
-`src/derived_state/`. This is a protected-core change and requires the full
+The next agent should write a failing snapshot recovery test that includes a
+temporal block, then introduce a versioned snapshot envelope containing state,
+derived data, temporal projections, applied IDs/count, event time, and the real
+EventStore sequence. This is a protected-core change and requires the full
 validation pipeline.

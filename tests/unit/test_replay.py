@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, ".")
 
@@ -78,6 +79,64 @@ async def test_replay_state_content():
     assert parsed["count"] == 2
 
     print("✓ replay preserves state content")
+
+
+async def test_derived_state_uses_event_time():
+    """Derived deadlines are evaluated at the latest event timestamp."""
+    event_time = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    event = Event(
+        EventType.HOMEWORK_NEW,
+        "event-time-homework",
+        AggregateType.HOMEWORK,
+        timestamp=event_time,
+        payload={
+            "title": "事件时间作业",
+            "course": "测试",
+            "status": "pending",
+            "deadline": (event_time + timedelta(hours=24)).isoformat(),
+        },
+    )
+    engine = StateEngine()
+    await engine.apply(event)
+
+    pressure = engine.get_all_derived()["deadline_pressure"]
+    assert pressure["overdue_count"] == 0
+    assert pressure["closest_deadline_hours"] == 24.0
+
+
+async def test_state_hash_read_does_not_change_feedback_replay():
+    """Reading state_hash before feedback must not change future state."""
+    event_time = datetime(2024, 1, 1, 9, 0, tzinfo=timezone.utc)
+    homework = Event(
+        EventType.HOMEWORK_NEW,
+        "read-purity-homework",
+        AggregateType.HOMEWORK,
+        timestamp=event_time,
+        payload={
+            "title": "读取纯度",
+            "course": "测试",
+            "status": "pending",
+            "deadline": (event_time + timedelta(days=2)).isoformat(),
+        },
+    )
+    feedback = Event(
+        EventType.PLANNING_RECOMMENDATION_ACCEPTED,
+        "read-purity-feedback",
+        AggregateType.SYSTEM,
+        timestamp=event_time + timedelta(hours=1),
+        payload={"task_id": "task-1"},
+    )
+
+    read_first = StateEngine()
+    await read_first.apply(homework)
+    read_first.state_hash()
+    await read_first.apply(feedback)
+
+    no_read = StateEngine()
+    await no_read.apply(homework)
+    await no_read.apply(feedback)
+
+    assert read_first.state_hash() == no_read.state_hash()
 
 
 async def test_replay_with_snapshot():

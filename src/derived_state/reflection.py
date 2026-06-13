@@ -10,7 +10,11 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 
-def compute_reflection(state: dict) -> dict[str, Any]:
+def compute_reflection(
+    state: dict,
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
     """Analyze long-term behavioral trends from feedback log.
 
     Reads behavior/current/feedback_log from state.
@@ -35,7 +39,7 @@ def compute_reflection(state: dict) -> dict[str, Any]:
             "analysis_period_days": 0,
         }
 
-    now = datetime.now(timezone.utc)
+    now = as_of or datetime.now(timezone.utc)
 
     # Parse feedbacks with timestamps
     parsed = []

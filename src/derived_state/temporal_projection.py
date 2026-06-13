@@ -19,7 +19,11 @@ DAILY_WAKING_HOURS = SLEEP_HOUR - WAKE_HOUR  # 17h
 WEEKLY_CAPACITY = DAILY_WAKING_HOURS * 7  # ~119h baseline
 
 
-def compute_projection(blocks: list[TimeBlock]) -> TemporalProjection:
+def compute_projection(
+    blocks: list[TimeBlock],
+    *,
+    as_of: datetime | None = None,
+) -> TemporalProjection:
     """Compute a TemporalProjection from a set of TimeBlocks.
 
     Args:
@@ -28,7 +32,7 @@ def compute_projection(blocks: list[TimeBlock]) -> TemporalProjection:
     Returns:
         TemporalProjection with free_slots, density, switching, capacity, load.
     """
-    now = datetime.now(timezone.utc)
+    now = as_of or datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     week_start = today_start - timedelta(days=now.weekday())

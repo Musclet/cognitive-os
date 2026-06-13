@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -38,6 +39,7 @@ class StateEngine:
         self._recovery_windows: list[dict[str, Any]] = []
         self._applied_event_ids: set[UUID] = set()
         self._applied_count: int = 0
+        self._as_of: datetime | None = None
         self._snapshot_path = Path(snapshot_path) if snapshot_path else None
         self._snapshot_store = snapshot_store
         self._snapshot_interval = snapshot_interval
@@ -54,6 +56,9 @@ class StateEngine:
 
         self._applied_event_ids.add(event.event_id)
         self._applied_count += 1
+        if self._as_of is None or event.timestamp > self._as_of:
+            self._as_of = event.timestamp
+            self._derived_dirty = True
 
         handler = self._get_handler(event.event_type)
         if handler:
@@ -166,6 +171,7 @@ class StateEngine:
         self._recovery_windows = []
         self._applied_event_ids = set()
         self._applied_count = 0
+        self._as_of = None
         for event in events:
             await self.apply(event)
         self._compute_derived_if_dirty()
@@ -217,15 +223,16 @@ class StateEngine:
         from src.derived_state.reflection import compute_reflection
         from src.derived_state.adaptation_params import compute_adapted_params
 
+        as_of = self._as_of or datetime.fromtimestamp(0, timezone.utc)
         self._derived["workload"] = compute_workload(self._state)
-        self._derived["deadline_pressure"] = compute_deadline_pressure(self._state)
-        self._derived["activity_density"] = compute_activity_density(self._state)
+        self._derived["deadline_pressure"] = compute_deadline_pressure(self._state, as_of=as_of)
+        self._derived["activity_density"] = compute_activity_density(self._state, as_of=as_of)
         effective_blocks = self.get_temporal_blocks()
-        proj = compute_projection(effective_blocks)
+        proj = compute_projection(effective_blocks, as_of=as_of)
         self._derived["temporal_projection"] = proj.to_dict()
-        self._derived["cognition"] = compute_cognition(self._state, proj.to_dict())
+        self._derived["cognition"] = compute_cognition(self._state, proj.to_dict(), as_of=as_of)
         self._derived["behavior"] = compute_behavior(self._state)
-        self._derived["reflection"] = compute_reflection(self._state)
+        self._derived["reflection"] = compute_reflection(self._state, as_of=as_of)
         adapted_params = compute_adapted_params(
             self._derived["behavior"],
             self._derived["reflection"],
@@ -237,6 +244,7 @@ class StateEngine:
             effective_blocks,
             self._derived["cognition"],
             adaptive,
+            as_of=as_of,
         )
         self._derived_dirty = False
 
@@ -491,7 +499,7 @@ class StateEngine:
         from datetime import datetime, timezone
         from zoneinfo import ZoneInfo
 
-        now = datetime.now(timezone.utc)
+        now = self._as_of or datetime.fromtimestamp(0, timezone.utc)
         local_tz = ZoneInfo("Asia/Singapore")
         dates: set[str] = set()
         for view in self._state.get("subjective", {}).values():
@@ -534,6 +542,7 @@ class StateEngine:
 
     def _on_recommendation_feedback(self, event: Event) -> None:
         """Store recommendation feedback in behavior log."""
+        self._compute_derived_if_dirty()
         view = self._ensure_aggregate("behavior", "current")
         log = view.get("feedback_log", [])
 
@@ -643,7 +652,7 @@ class StateEngine:
         by_day: dict[str, list[str]] = {}
         busy: list[dict[str, Any]] = []
         recovery: list[dict[str, Any]] = []
-        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        now = self._as_of or datetime.fromtimestamp(0, timezone.utc)
         effective_block_keys = {
             "|".join([
                 str(block.source),

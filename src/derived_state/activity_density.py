@@ -6,14 +6,18 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 
-def compute_activity_density(state: dict[str, Any]) -> dict[str, Any]:
+def compute_activity_density(
+    state: dict[str, Any],
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
     """Compute activity density from notification history.
 
     Input: state dict from StateEngine
     Output: {events_last_hour, events_last_24h, score}
     """
     notification_state = state.get("notification", {})
-    now = datetime.now(timezone.utc)
+    now = as_of or datetime.now(timezone.utc)
     hour_ago = now - timedelta(hours=1)
     day_ago = now - timedelta(hours=24)
 
