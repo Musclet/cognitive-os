@@ -73,7 +73,8 @@ def temp_vault(tmp_path: Path, settings: Settings) -> Path:
         "# {{date}} 星期{{weekday}}\n\n"
         "## 🎨 绘画训练\n\n\n"
         "## 🧾 今日事件流\n\n\n"
-        "## 📝 其他\n"
+        "## 📝 其他\n",
+        encoding="utf-8",
     )
     return vault
 

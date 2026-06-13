@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import tempfile
+from types import SimpleNamespace
 
 sys.path.insert(0, ".")
 
@@ -156,9 +157,14 @@ async def test_api_endpoints():
                 snapshot_store=snapshot_store,
                 tracer=tracer,
                 dead_letter=dlq,
+                settings=SimpleNamespace(
+                    inspector_admin_token="test-admin-token",
+                    allowed_origins="",
+                ),
             )
 
             client = TestClient(app)
+            client.headers["X-Admin-Token"] = "test-admin-token"
 
             e1 = Event(EventType.HOMEWORK_NEW, "hw-a", AggregateType.HOMEWORK,
                        payload={"title": "Test", "course": "Math"})

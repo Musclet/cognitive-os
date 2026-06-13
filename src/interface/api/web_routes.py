@@ -26,7 +26,17 @@ from src.core.state_engine import StateEngine
 from src.core.pipeline import Pipeline
 from src.core.events import Command, Event, EventType, AggregateType
 from src.domain.course_topology import is_excluded_course, normalize_course_name
+from src.domain.dashboard.query import build_dashboard
+from src.domain.calendar.conflicts import (
+    detect_conflicts as _detect_conflicts,
+    parse_datetime as _parse_dt,
+)
+from src.domain.finance.commands import FinanceCommandError, build_finance_events
 from src.domain.homework.status import is_open_homework_status
+from src.domain.undo.commands import build_finance_revert_events
+from src.interface.api.schemas.calendar import CalendarProposalResponse
+from src.interface.api.schemas.dashboard import DashboardResponse
+from src.interface.api.schemas.finance import FinanceActionResponse, FinanceRevertResponse
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +233,7 @@ def _homework_feedback_for(
     return None
 
 
-def _build_dashboard(state_engine: StateEngine | None, settings: Any) -> dict[str, Any]:
+def _legacy_build_dashboard(state_engine: StateEngine | None, settings: Any) -> dict[str, Any]:
     """Aggregate all available state into a dashboard JSON payload."""
     now = datetime.now(LOCAL_TZ)
     today = now.date()
@@ -570,20 +580,20 @@ def _weekday_cn(d: date) -> str:
     return names[d.weekday()]
 
 
-@router.get("/api/web/dashboard")
+@router.get("/api/web/dashboard", response_model=DashboardResponse)
 async def web_dashboard(request: Request):
     """Aggregate dashboard for Web UI."""
     _require_session(request)
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings = _settings(request)
-    data = _build_dashboard(engine, settings)
+    data = build_dashboard(engine, settings)
     return data
 
 
 # ── Finance action endpoint ────────────────────────────────────────────────────
 
 
-@router.post("/api/web/finance/action")
+@router.post("/api/web/finance/action", response_model=FinanceActionResponse)
 async def web_finance_action(request: Request, body: dict):
     """Execute a structured finance action and return refreshed dashboard.
 
@@ -609,6 +619,35 @@ async def web_finance_action(request: Request, body: dict):
     user_id = _web_user_id(request)
     trace_id = str(uuid4())
     metadata = _web_event_metadata(user_id, trace_id)
+    try:
+        root_events = build_finance_events(action, body, user_id, metadata)
+        produced: list[Event] = []
+        for event in root_events:
+            produced.extend(await pipeline.run(event))
+    except FinanceCommandError as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"ok": False, "message": exc.message},
+        )
+    except Exception as exc:
+        logger.exception("finance action failed: %s", action)
+        return {"ok": False, "message": f"操作异常: {str(exc)[:80]}"}
+
+    engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
+    settings_obj = _settings(request)
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
+    tracked = _track_web_actions(root_events + produced, f"finance_{action}", user_id)
+    return {
+        "ok": True,
+        "message": f"已记录{_finance_action_label(action)}",
+        "action": action,
+        "events": len(root_events) + len(produced),
+        "needs_followup": False,
+        "dashboard": dashboard,
+        "action_id": tracked[0]["action_id"] if tracked else None,
+        "can_undo": action in {"expense", "income"},
+    }
+
     produced: list[Event] = []
     root_events: list[Event] = []
 
@@ -745,7 +784,7 @@ async def web_finance_action(request: Request, body: dict):
     # Re-read dashboard
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
 
     # Track undoable actions
     tracked = _track_web_actions(root_events + produced, f"finance_{action}", user_id)
@@ -775,7 +814,7 @@ def _finance_action_label(action: str) -> str:
     return labels.get(action, action)
 
 
-@router.post("/api/web/finance/revert")
+@router.post("/api/web/finance/revert", response_model=FinanceRevertResponse)
 async def web_finance_revert(request: Request, body: dict):
     """Revert a concrete finance ledger row through canonical undo events.
 
@@ -817,7 +856,7 @@ async def web_finance_revert(request: Request, body: dict):
                         "ok": False,
                         "message": "这条账目已经撤回过。",
                         "needs_followup": True,
-                        "dashboard": _build_dashboard(engine, settings_obj),
+                        "dashboard": build_dashboard(engine, settings_obj),
                     }
 
     pipeline: Pipeline | None = getattr(request.app.state, "pipeline", None)
@@ -828,27 +867,12 @@ async def web_finance_revert(request: Request, body: dict):
     meta = _web_event_metadata(user_id, trace_id)
     category = str(body.get("category") or "other")
 
-    undo_requested = Event(
-        event_type=EventType.USER_UNDO_REQUESTED,
-        aggregate_id=user_id,
-        aggregate_type=AggregateType.USER,
-        payload={"action_id": action_id, "action_type": action_type, "source": "web_finance_ledger"},
-        metadata=meta,
-    )
-    revert_payload: dict[str, Any] = {
-        "action_type": action_type,
-        "action_id": action_id,
-        "amount": amount,
-    }
-    if action_type == "finance_transaction":
-        revert_payload["category"] = category
-
-    reverted = Event(
-        event_type=EventType.USER_ACTION_REVERTED,
-        aggregate_id=user_id,
-        aggregate_type=AggregateType.USER,
-        causation_id=undo_requested.event_id,
-        payload=revert_payload,
+    undo_requested, reverted = build_finance_revert_events(
+        user_id=user_id,
+        action_id=action_id,
+        action_type=action_type,
+        amount=amount,
+        category=category,
         metadata=meta,
     )
 
@@ -860,7 +884,7 @@ async def web_finance_revert(request: Request, body: dict):
         return {"ok": False, "message": f"撤回执行异常: {str(exc)[:80]}", "needs_followup": True}
 
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
     return {
         "ok": True,
         "message": "已撤回账目。",
@@ -875,7 +899,7 @@ async def web_finance_revert(request: Request, body: dict):
 # ── Conflict detection helpers ────────────────────────────────────────────────
 
 
-def _parse_dt(s: str, date_ref: date | None = None) -> datetime | None:
+def _legacy_parse_dt(s: str, date_ref: date | None = None) -> datetime | None:
     """Parse a datetime string that could be ISO format or HH:MM.
 
     Returns None if ``s`` is empty or unparseable.
@@ -898,7 +922,7 @@ def _parse_dt(s: str, date_ref: date | None = None) -> datetime | None:
     return None
 
 
-def _detect_conflicts(
+def _legacy_detect_conflicts(
     candidate_start: datetime,
     candidate_end: datetime,
     state: dict[str, Any],
@@ -1227,7 +1251,7 @@ def _dedupe_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]
 # ── Calendar Proposal endpoint ─────────────────────────────────────────
 
 
-@router.post("/api/web/calendar/proposal")
+@router.post("/api/web/calendar/proposal", response_model=CalendarProposalResponse)
 async def web_calendar_proposal(request: Request, body: dict):
     """Create a proposal for a Google Calendar event (create/update/delete).
 
@@ -1447,7 +1471,7 @@ async def web_calendar_proposal(request: Request, body: dict):
 
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
 
     resp: dict[str, Any] = {
         "ok": True,
@@ -2254,7 +2278,7 @@ async def web_tasks_action(request: Request, body: dict):
 
         engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
         settings_obj = _settings(request)
-        dashboard = _build_dashboard(engine, settings_obj) if engine else None
+        dashboard = build_dashboard(engine, settings_obj) if engine else None
 
         return {
             "ok": True,
@@ -2277,7 +2301,7 @@ async def web_tasks_action(request: Request, body: dict):
     if not events:
         engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
         settings_obj = _settings(request)
-        dashboard = _build_dashboard(engine, settings_obj) if engine else None
+        dashboard = build_dashboard(engine, settings_obj) if engine else None
         return {
             "ok": True,
             "message": "没有需要处理的事项",
@@ -2305,7 +2329,7 @@ async def web_tasks_action(request: Request, body: dict):
     tracked_actions = _track_web_actions(events, f"tasks_{action}", user_id)
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
 
     resp: dict[str, Any] = {
         "ok": True,
@@ -2512,7 +2536,7 @@ async def web_today_action(request: Request, body: dict):
 
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
 
     return {
         "ok": True,
@@ -2671,7 +2695,7 @@ async def web_review_action(request: Request, body: dict):
 
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
 
     return {
         "ok": True,
@@ -2751,7 +2775,7 @@ async def web_system_action(request: Request, body: dict):
 
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
 
     return {
         "ok": True,
@@ -2875,7 +2899,7 @@ async def web_actions(request: Request, body: dict):
 
         engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
         settings_obj = _settings(request)
-        dashboard = _build_dashboard(engine, settings_obj) if engine else None
+        dashboard = build_dashboard(engine, settings_obj) if engine else None
 
         return {
             "ok": True,
@@ -2905,7 +2929,7 @@ async def web_actions(request: Request, body: dict):
     if command_type in _READ_ONLY_COMMANDS:
         engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
         settings = _settings(request)
-        dashboard = _build_dashboard(engine, settings)
+        dashboard = build_dashboard(engine, settings)
         return {
             "ok": True,
             "message": f"已获取{raw_text[:30]}数据",
@@ -2948,7 +2972,7 @@ async def web_actions(request: Request, body: dict):
         tracked_actions = _track_web_actions(all_produced, command_type, user_id)
         engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
         settings = _settings(request)
-        dashboard = _build_dashboard(engine, settings) if engine else None
+        dashboard = build_dashboard(engine, settings) if engine else None
 
         resp: dict[str, Any] = {
             "ok": True,
@@ -2982,7 +3006,7 @@ async def web_actions(request: Request, body: dict):
 
         engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
         settings = _settings(request)
-        dashboard = _build_dashboard(engine, settings) if engine else None
+        dashboard = build_dashboard(engine, settings) if engine else None
 
         tracked_actions = _track_web_actions([], command_type, user_id)
         resp: dict[str, Any] = {
@@ -3030,7 +3054,7 @@ async def web_actions(request: Request, body: dict):
     # Refresh dashboard for mutating actions too
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings = _settings(request)
-    dashboard = _build_dashboard(engine, settings) if engine else None
+    dashboard = build_dashboard(engine, settings) if engine else None
 
     tracked_actions = _track_web_actions(produced, command_type, user_id)
     resp: dict[str, Any] = {
@@ -3272,7 +3296,7 @@ async def web_proposal_decision(request: Request, body: dict):
     ok, message = _execution_message(result, title)
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
-    dashboard = _build_dashboard(engine, settings_obj) if engine else None
+    dashboard = build_dashboard(engine, settings_obj) if engine else None
 
     return {
         "ok": ok,

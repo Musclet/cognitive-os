@@ -20,6 +20,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from src.core.state_engine import StateEngine
+from src.domain.dashboard.query import build_dashboard
+from src.interface.api.schemas.dashboard import DashboardResponse
 from src.core.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
@@ -132,7 +134,7 @@ async def mobile_login(request: Request, body: dict):
 # ── Dashboard ────────────────────────────────────────────────────────────────
 
 
-@router.get("/dashboard")
+@router.get("/dashboard", response_model=DashboardResponse)
 async def mobile_dashboard(request: Request):
     """Return the aggregated dashboard JSON (same as web UI)."""
     _require_mobile_auth(request)
@@ -140,9 +142,7 @@ async def mobile_dashboard(request: Request):
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings = _settings(request)
 
-    # Reuse web dashboard builder
-    from src.interface.api.web_routes import _build_dashboard
-    return _build_dashboard(engine, settings)
+    return build_dashboard(engine, settings)
 
 
 # ── Workout ──────────────────────────────────────────────────────────────────

@@ -16,6 +16,8 @@ def compute_planning(
     temporal_blocks: list[TimeBlock],
     cognition: dict[str, Any],
     adaptive: dict[str, Any] | None = None,
+    *,
+    as_of: datetime | None = None,
 ) -> dict[str, Any]:
     """Generate planning suggestions from current state.
 
@@ -26,7 +28,7 @@ def compute_planning(
     Returns:
         recommended_windows, overloaded_days, focus_windows, recovery_slots.
     """
-    now = datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
 

@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, ".")
 
@@ -78,6 +79,64 @@ async def test_replay_state_content():
     assert parsed["count"] == 2
 
     print("✓ replay preserves state content")
+
+
+async def test_derived_state_uses_event_time():
+    """Derived deadlines are evaluated at the latest event timestamp."""
+    event_time = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    event = Event(
+        EventType.HOMEWORK_NEW,
+        "event-time-homework",
+        AggregateType.HOMEWORK,
+        timestamp=event_time,
+        payload={
+            "title": "事件时间作业",
+            "course": "测试",
+            "status": "pending",
+            "deadline": (event_time + timedelta(hours=24)).isoformat(),
+        },
+    )
+    engine = StateEngine()
+    await engine.apply(event)
+
+    pressure = engine.get_all_derived()["deadline_pressure"]
+    assert pressure["overdue_count"] == 0
+    assert pressure["closest_deadline_hours"] == 24.0
+
+
+async def test_state_hash_read_does_not_change_feedback_replay():
+    """Reading state_hash before feedback must not change future state."""
+    event_time = datetime(2024, 1, 1, 9, 0, tzinfo=timezone.utc)
+    homework = Event(
+        EventType.HOMEWORK_NEW,
+        "read-purity-homework",
+        AggregateType.HOMEWORK,
+        timestamp=event_time,
+        payload={
+            "title": "读取纯度",
+            "course": "测试",
+            "status": "pending",
+            "deadline": (event_time + timedelta(days=2)).isoformat(),
+        },
+    )
+    feedback = Event(
+        EventType.PLANNING_RECOMMENDATION_ACCEPTED,
+        "read-purity-feedback",
+        AggregateType.SYSTEM,
+        timestamp=event_time + timedelta(hours=1),
+        payload={"task_id": "task-1"},
+    )
+
+    read_first = StateEngine()
+    await read_first.apply(homework)
+    read_first.state_hash()
+    await read_first.apply(feedback)
+
+    no_read = StateEngine()
+    await no_read.apply(homework)
+    await no_read.apply(feedback)
+
+    assert read_first.state_hash() == no_read.state_hash()
 
 
 async def test_replay_with_snapshot():
@@ -172,6 +231,86 @@ async def test_snapshot_fallback_on_corruption():
             assert hw1["title"] == "数学作业"
             print("✓ fallback to full replay when no snapshot")
 
+        finally:
+            await close_db()
+
+
+async def test_database_snapshot_restores_temporal_state_and_sequence():
+    """Automatic DB snapshots preserve temporal projections and event sequence."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "snapshot_temporal.db")
+        await init_db(f"sqlite+aiosqlite:///{db_path}")
+        try:
+            from src.core.bus import EventBus
+            from src.core.pipeline import Pipeline
+
+            event_store = EventStore()
+            snapshot_store = SnapshotStore()
+            bus = EventBus(event_store=event_store)
+            engine = StateEngine(snapshot_store=snapshot_store, snapshot_interval=1)
+            bus.subscribe(EventType.TEMPORAL_BLOCK_ADDED, engine.apply)
+            pipeline = Pipeline(bus)
+
+            start = datetime(2026, 6, 16, 2, 0, tzinfo=timezone.utc)
+            event = Event(
+                EventType.TEMPORAL_BLOCK_ADDED,
+                "db-snapshot-block",
+                AggregateType.TEMPORAL,
+                timestamp=start,
+                payload={
+                    "block_id": "db-snapshot-block",
+                    "source": "jwxt",
+                    "block_type": "class_lecture",
+                    "start": start.isoformat(),
+                    "end": (start + timedelta(hours=1)).isoformat(),
+                    "title": "数据库快照课程",
+                },
+            )
+            await pipeline.run(event)
+
+            latest = await snapshot_store.get_latest()
+            assert latest is not None
+            envelope, last_sequence = latest
+            assert last_sequence == 1
+            assert envelope["version"] == 2
+            assert envelope["temporal_blocks"]
+
+            restored = StateEngine()
+            restored_hash = await restored.rebuild_with_snapshot(event_store, snapshot_store)
+            assert len(restored.get_temporal_blocks()) == 1
+            assert restored.get_temporal_blocks()[0].title == "数据库快照课程"
+            assert restored_hash == engine.state_hash()
+        finally:
+            await close_db()
+
+
+async def test_snapshot_event_does_not_recursively_snapshot():
+    """Snapshot lifecycle events must not trigger another automatic snapshot."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "snapshot_recursion.db")
+        await init_db(f"sqlite+aiosqlite:///{db_path}")
+        try:
+            from src.core.bus import EventBus
+            from src.core.pipeline import Pipeline
+
+            event_store = EventStore()
+            snapshot_store = SnapshotStore()
+            bus = EventBus(event_store=event_store)
+            engine = StateEngine(snapshot_store=snapshot_store, snapshot_interval=1)
+            for event_type in EventType:
+                bus.subscribe(event_type, engine.apply)
+
+            events = await Pipeline(bus, max_depth=5).run(Event(
+                EventType.HOMEWORK_NEW,
+                "snapshot-recursion",
+                AggregateType.HOMEWORK,
+                payload={"title": "单次快照", "course": "测试"},
+            ))
+
+            assert [event.event_type for event in events].count(
+                EventType.SYSTEM_SNAPSHOT_CREATED
+            ) == 1
+            assert len(await snapshot_store.get_all()) == 1
         finally:
             await close_db()
 

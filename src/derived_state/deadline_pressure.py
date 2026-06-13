@@ -10,14 +10,18 @@ from src.domain.homework.status import is_open_homework_status
 from src.domain.homework.urgency import deadline_urgency_score
 
 
-def compute_deadline_pressure(state: dict[str, Any]) -> dict[str, Any]:
+def compute_deadline_pressure(
+    state: dict[str, Any],
+    *,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
     """Compute deadline pressure from homework deadlines.
 
     Input: state dict from StateEngine
     Output: {closest_deadline_hours, overdue_count, score}
     """
     homework_state = state.get("homework", {})
-    now = datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
 
     closest_hours: float | None = None
     overdue_count = 0

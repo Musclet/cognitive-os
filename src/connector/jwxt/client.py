@@ -75,12 +75,7 @@ class JwxtConnector(Connector):
         return {"source": self.source_name, "error": f"unsupported query: {query}"}
 
     async def _real_weekly_schedule(self) -> dict[str, Any]:
-        # Prefer httpx (lightweight, works on Render), fall back to Playwright
-        try:
-            raw = await self._fetch_schedule_api_httpx()
-        except Exception as e:
-            logger.warning("httpx fetch failed, falling back to Playwright: %s", e)
-            raw = await self._fetch_schedule_api_playwright()
+        raw = await self._fetch_schedule_api()
         kb_list = raw.get("kbList", [])
 
         today = datetime.now(LOCAL_TZ).date()
@@ -106,6 +101,14 @@ class JwxtConnector(Connector):
             "window_days": window_days,
             "teaching_week": current_week,
         }
+
+    async def _fetch_schedule_api(self) -> dict[str, Any]:
+        """Fetch raw schedule data through the preferred transport."""
+        try:
+            return await self._fetch_schedule_api_httpx()
+        except Exception as e:
+            logger.warning("httpx fetch failed, falling back to Playwright: %s", e)
+            return await self._fetch_schedule_api_playwright()
 
     async def _fetch_schedule_api_httpx(self) -> dict[str, Any]:
         """Fetch schedule via httpx using saved cookies — no browser needed (Render-safe)."""
@@ -366,13 +369,26 @@ class JwxtConnector(Connector):
         if event.payload.get("source") != self.source_name:
             return []
 
+        trace_id = str(event.event_id)
+        started_event = Event(
+            event_type=EventType.CONNECTOR_FETCH_STARTED,
+            aggregate_id=event.aggregate_id,
+            aggregate_type=AggregateType.SYSTEM,
+            causation_id=event.event_id,
+            payload={
+                "source": self.source_name,
+                "query": event.payload.get("query", ""),
+                "intent": event.payload.get("intent", ""),
+            },
+            metadata={"source": self.source_name, "trace_id": trace_id},
+        )
         try:
             data = await self.fetch(event.payload)
             if data.get("error"):
                 raise RuntimeError(data["error"])
 
             blocks_raw = data.get("blocks", [])
-            produced: list[Event] = []
+            produced: list[Event] = [started_event]
 
             for b_dict in blocks_raw:
                 produced.append(Event(
@@ -381,7 +397,7 @@ class JwxtConnector(Connector):
                     aggregate_type=AggregateType.TEMPORAL,
                     causation_id=event.event_id,
                     payload=b_dict,
-                    metadata={"source": self.source_name},
+                    metadata={"source": self.source_name, "trace_id": trace_id},
                 ))
 
             unique_courses: dict[str, str] = {}
@@ -405,7 +421,7 @@ class JwxtConnector(Connector):
                         "source": self.source_name,
                         "semester": "current",
                     },
-                    metadata={"source": self.source_name},
+                    metadata={"source": self.source_name, "trace_id": trace_id},
                 ))
 
             produced.append(Event(
@@ -421,20 +437,20 @@ class JwxtConnector(Connector):
                     "teaching_week": data.get("teaching_week"),
                     "intent": event.payload.get("intent", ""),
                 },
-                metadata={"source": self.source_name},
+                metadata={"source": self.source_name, "trace_id": trace_id},
             ))
 
             return produced
 
         except Exception as exc:
             logger.exception("JWXT fetch failed")
-            return [Event(
+            return [started_event, Event(
                 event_type=EventType.CONNECTOR_FETCH_FAILED,
                 aggregate_id=event.aggregate_id,
                 aggregate_type=AggregateType.SYSTEM,
                 causation_id=event.event_id,
                 payload={"source": self.source_name, "error": str(exc)},
-                metadata={"source": self.source_name},
+                metadata={"source": self.source_name, "trace_id": trace_id},
             )]
 
 

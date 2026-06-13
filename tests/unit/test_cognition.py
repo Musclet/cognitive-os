@@ -38,7 +38,11 @@ def test_cognition_with_homework():
     }
     proj = {"busy_density": 0.3, "weekly_load": 0.4, "daily_capacity": 12.0}
 
-    cog = compute_cognition(state, proj)
+    cog = compute_cognition(
+        state,
+        proj,
+        as_of=datetime(2026, 6, 13, tzinfo=timezone.utc),
+    )
     assert cog["pending_total"] == 2
     assert cog["workload_overload"] > 0.1
     assert cog["deadline_pressure"] > 0
@@ -52,7 +56,11 @@ def test_cognition_overdue():
             "hw-1": {"title": "过期作业", "status": "pending", "deadline": "2020-01-01T00:00:00Z"},
         }
     }
-    cog = compute_cognition(state, {})
+    cog = compute_cognition(
+        state,
+        {},
+        as_of=datetime(2026, 6, 13, tzinfo=timezone.utc),
+    )
     assert cog["deadline_pressure"] == 1.0
     print("✓ cognition: overdue → deadline_pressure = 1.0")
 
@@ -85,13 +93,14 @@ def test_cognition_deadline_beyond_10_days_not_pressure():
 
 
 def test_cognition_deadline_within_24h_super_urgent():
-    deadline = (datetime.now(timezone.utc) + timedelta(hours=23)).isoformat()
+    now = datetime.now(timezone.utc)
+    deadline = (now + timedelta(hours=23)).isoformat()
     state = {
         "homework": {
             "hw-1": {"title": "近期开题", "status": "pending", "deadline": deadline},
         }
     }
-    cog = compute_cognition(state, {})
+    cog = compute_cognition(state, {}, as_of=now)
     assert cog["deadline_pressure"] == 1.0
 
 
@@ -108,7 +117,7 @@ def test_cognition_clustered_ddls():
             "hw-3": {"title": "C", "status": "pending", "deadline": soon},
         }
     }
-    cog = compute_cognition(state, {})
+    cog = compute_cognition(state, {}, as_of=now)
     assert cog["deadline_pressure"] > 0.85  # close to 1.0 due to clustering
     print(f"✓ cognition: 3 DDLs in 24h → pressure={cog['deadline_pressure']:.3f}")
 

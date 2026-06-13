@@ -80,7 +80,10 @@ def test_deadline_pressure_overdue():
             "deadline": "2020-01-01T00:00:00Z",  # way in the past
         }
     }}
-    result = compute_deadline_pressure(state)
+    result = compute_deadline_pressure(
+        state,
+        as_of=datetime(2026, 6, 13, tzinfo=timezone.utc),
+    )
     assert result["overdue_count"] == 1
     assert result["score"] == 1.0
     print("✓ deadline_pressure: overdue → 1.0")
@@ -109,7 +112,8 @@ def test_deadline_pressure_ignores_items_beyond_10_days():
 
 
 def test_deadline_pressure_24h_is_super_urgent():
-    deadline = (datetime.now(timezone.utc) + timedelta(hours=23)).isoformat()
+    now = datetime.now(timezone.utc)
+    deadline = (now + timedelta(hours=23)).isoformat()
     state = {"homework": {
         "hw-1": {
             "title": "明天交",
@@ -118,7 +122,7 @@ def test_deadline_pressure_24h_is_super_urgent():
             "deadline": deadline,
         }
     }}
-    result = compute_deadline_pressure(state)
+    result = compute_deadline_pressure(state, as_of=now)
     assert result["score"] == 1.0
 
 
@@ -157,8 +161,8 @@ def test_activity_density_deterministic():
             ]
         }
     }}
-    r1 = compute_activity_density(state)
-    r2 = compute_activity_density(state)
+    r1 = compute_activity_density(state, as_of=now)
+    r2 = compute_activity_density(state, as_of=now)
     assert r1 == r2
     print("✓ activity_density: deterministic")
 

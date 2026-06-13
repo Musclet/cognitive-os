@@ -6,7 +6,6 @@ Ensures connector failures never block the event loop.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,6 +24,8 @@ class DeadLetterEntry:
     event_id: str
     event_type: str
     error: str
+    error_type: str
+    handler: str
     timestamp: str
     payload: dict[str, Any] = field(default_factory=dict)
     retry_count: int = 0
@@ -38,12 +39,20 @@ class DeadLetterQueue:
     def __init__(self) -> None:
         self._entries: list[DeadLetterEntry] = []
 
-    def add(self, event: Event, error: Exception, retry_count: int = 0) -> DeadLetterEntry:
+    def add(
+        self,
+        event: Event,
+        error: Exception,
+        retry_count: int = 0,
+        handler: str = "",
+    ) -> DeadLetterEntry:
         entry = DeadLetterEntry(
             entry_id=str(uuid4()),
             event_id=str(event.event_id),
             event_type=event.event_type.value,
             error=str(error),
+            error_type=type(error).__name__,
+            handler=handler,
             timestamp=datetime.now(timezone.utc).isoformat(),
             payload=event.payload,
             retry_count=retry_count,
@@ -61,6 +70,8 @@ class DeadLetterQueue:
                 "event_id": e.event_id,
                 "event_type": e.event_type,
                 "error": e.error,
+                "error_type": e.error_type,
+                "handler": e.handler,
                 "timestamp": e.timestamp,
                 "retry_count": e.retry_count,
             }

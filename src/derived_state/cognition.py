@@ -18,6 +18,8 @@ from src.domain.homework.urgency import deadline_urgency_score
 def compute_cognition(
     state: dict[str, Any],
     temporal_projection: dict[str, Any] | None = None,
+    *,
+    as_of: datetime | None = None,
 ) -> dict[str, Any]:
     """Compute full cognitive state.
 
@@ -27,7 +29,7 @@ def compute_cognition(
         deadline_pressure, workload_overload, fatigue_risk,
         recovery_window, stress_projection, next_48h_capacity
     """
-    now = datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
 
     # Extract inputs
     homework_state = state.get("homework", {})

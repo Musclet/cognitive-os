@@ -27,14 +27,8 @@ os.environ["HTTPS_PROXY"] = ""
 os.environ["NO_PROXY"] = "*"
 
 from src.infrastructure.config import Settings
-from src.storage.db import init_db, close_db
-from src.storage.event_store import EventStore
-from src.storage.snapshot_store import SnapshotStore
-from src.core.bus import EventBus
-from src.core.pipeline import Pipeline
-from src.core.state_engine import StateEngine
-from src.core.tracer import Tracer
 from src.core.events import Event, EventType, AggregateType
+from src.runtime.composition import build_runtime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,46 +43,19 @@ HEARTBEAT_INTERVAL_S = 30  # heartbeat every 30s
 
 async def main() -> None:
     settings = Settings()
-    settings.ensure_dirs()
-    settings.apply_env_google_credentials()
+    runtime = await build_runtime(settings, mode="worker")
 
     logger.info("worker starting — db=%s snapshot=%s",
                 "postgres" if settings.database_url.startswith("postgresql") else "sqlite",
                 settings.snapshot_path)
 
     # ── Storage ────────────────────────────────────────────────────────
-    await init_db(settings.database_url)
-    event_store = EventStore()
-    snapshot_store = SnapshotStore()
+    pipeline = runtime.pipeline
 
     # ── Core ───────────────────────────────────────────────────────────
-    bus = EventBus(event_store=event_store)
-    tracer = Tracer()
-    state_engine = StateEngine(
-        snapshot_path=settings.snapshot_path,
-        snapshot_store=snapshot_store,
-        snapshot_interval=100,
-    )
-    pipeline = Pipeline(bus, tracer=tracer)
 
     # ── Replay — rebuild state from the shared event log ───────────────
-    try:
-        events = await event_store.replay_all()
-        if events:
-            await state_engine.rebuild_from_events(events)
-            logger.info("state rebuilt from %d events", len(events))
-        else:
-            state_engine.load_snapshot()
-            logger.info("event log empty; snapshot loaded if available")
-    except Exception:
-        logger.exception("state rebuild failed; falling back to snapshot")
-        state_engine.load_snapshot()
-
     # ── Wire state engine to bus (real-time apply) ─────────────────────
-    for event_type in EventType:
-        bus.subscribe(event_type, state_engine.apply)
-    logger.info("subscribed state engine to %d event types", len(EventType))
-
     # ── Heartbeat loop ─────────────────────────────────────────────────
     emit_count = 0
     started_at = time.monotonic()
@@ -125,8 +92,7 @@ async def main() -> None:
             logger.exception("heartbeat #%d failed", emit_count)
 
     # ── Cleanup ────────────────────────────────────────────────────────
-    state_engine.save_snapshot()
-    await close_db()
+    await runtime.close()
     logger.info("worker shut down cleanly")
 
 

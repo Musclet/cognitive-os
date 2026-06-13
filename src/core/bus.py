@@ -13,7 +13,8 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 from uuid import UUID
 
-from src.core.events import Event
+from src.core.events import AggregateType, Event, EventType
+from src.core.safety import DeadLetterQueue
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +29,11 @@ class EventBus:
     fails, the event is not delivered.
     """
 
-    def __init__(self, event_store=None) -> None:
+    def __init__(self, event_store=None, dead_letter: DeadLetterQueue | None = None) -> None:
         self._subscribers: dict[str, list[Handler]] = defaultdict(list)
         self._published_count: int = 0
         self._event_store = event_store
+        self._dead_letter = dead_letter
 
         # Cascade tracking
         self._cascade_count: int = 0
@@ -56,7 +58,8 @@ class EventBus:
 
         # Persist to durable store first (fail-fast: no delivery on persist failure)
         if self._event_store is not None:
-            await self._event_store.append(event)
+            sequence = await self._event_store.append(event)
+            event._sequence = sequence
 
         handlers = self._subscribers.get(event.event_type, [])
         if not handlers:
@@ -72,7 +75,34 @@ class EventBus:
         produced: list[Event] = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.error("handler %d failed for %s: %s", i, event.event_type, result)
+                handler = handlers[i]
+                handler_name = getattr(handler, "__qualname__", getattr(handler, "__name__", repr(handler)))
+                logger.error(
+                    "handler %s failed for %s: %s",
+                    handler_name,
+                    event.event_type,
+                    result,
+                )
+                if self._dead_letter is not None:
+                    self._dead_letter.add(event, result, handler=handler_name)
+                if event.event_type != EventType.SYSTEM_EVENT_FAILED:
+                    produced.append(Event(
+                        event_type=EventType.SYSTEM_EVENT_FAILED,
+                        aggregate_id=event.aggregate_id,
+                        aggregate_type=AggregateType.SYSTEM,
+                        causation_id=event.event_id,
+                        payload={
+                            "failed_event_id": str(event.event_id),
+                            "failed_event_type": event.event_type.value,
+                            "handler": handler_name,
+                            "error_type": type(result).__name__,
+                            "error": str(result),
+                        },
+                        metadata={
+                            "source": "event_bus",
+                            "trace_id": event.metadata.get("trace_id", str(event.event_id)),
+                        },
+                    ))
                 continue
             if result:
                 produced.extend(result)
@@ -121,9 +151,10 @@ class EventBus:
                     if p.event_id in visited:
                         continue
                     visited.add(p.event_id)
-                    # Stamp trace metadata
-                    p.metadata["trace_id"] = str(trace_id)
-                    p.metadata["cascade_depth"] = depth + 1
+                    p = p.with_metadata(
+                        trace_id=str(trace_id),
+                        cascade_depth=depth + 1,
+                    )
                     fanout_total += 1
                     next_queue.append((p, depth + 1))
                     produced_all.append(p)

@@ -5,6 +5,8 @@ Subscribes to planning-relevant events and emits planning.* events.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from src.core.events import Event, EventType, AggregateType
 
 TRIGGER_EVENTS = {
@@ -35,7 +37,10 @@ async def compute_and_emit_planning(state_engine) -> list[Event]:
     derived = state_engine.get_all_derived()
     cognition = derived.get("cognition", {})
 
-    planning = compute_planning(blocks, cognition)
+    snapshot = state_engine.snapshot()
+    as_of_raw = snapshot.get("as_of")
+    as_of = datetime.fromisoformat(as_of_raw) if as_of_raw else None
+    planning = compute_planning(blocks, cognition, as_of=as_of)
 
     events: list[Event] = []
 

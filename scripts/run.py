@@ -18,18 +18,10 @@ _os.environ["HTTPS_PROXY"] = ""
 _os.environ["NO_PROXY"] = "*"
 
 from src.infrastructure.config import Settings
-from src.storage.db import init_db, close_db
-from src.storage.event_store import EventStore
-from src.storage.snapshot_store import SnapshotStore
-from src.core.bus import EventBus
 from src.core.events import AggregateType, Event, EventType
-from src.core.pipeline import Pipeline
-from src.core.state_engine import StateEngine
-from src.core.tracer import Tracer
-from src.core.safety import DeadLetterQueue
-from src.interface.api.app import create_app
 from src.interface.telegram.bot import CognitiveOSBot
 from src.infrastructure.scheduler import CognitiveScheduler
+from src.runtime.composition import build_runtime
 from derived_state import DerivedStateEngine
 from intervention import InterventionEngine
 from derived_state.active_courses import ActiveCourseRegistry
@@ -49,22 +41,14 @@ async def main():
     setup_event_loop_monitoring()
 
     settings = Settings()
-    settings.ensure_dirs()
+    runtime = await build_runtime(settings, mode="local", web_ui_dist_path="web/dist")
 
     # ── Storage ────────────────────────────────────────────────────
-    await init_db(settings.database_url)
-    event_store = EventStore()
-    snapshot_store = SnapshotStore()
+    event_store = runtime.event_store
 
     # ── Core ───────────────────────────────────────────────────────
-    dead_letter = DeadLetterQueue()
-    bus = EventBus(event_store=event_store)
-    tracer = Tracer()
-    state_engine = StateEngine(
-        snapshot_path=settings.snapshot_path,
-        snapshot_store=snapshot_store,
-        snapshot_interval=50,
-    )
+    bus = runtime.bus
+    state_engine = runtime.state_engine
 
     # Active Course Registry
     course_registry = ActiveCourseRegistry()
@@ -78,21 +62,9 @@ async def main():
     # Intervention Engine
     intervention_engine = InterventionEngine(event_bus=bus, state_engine=state_engine,
         cooldown_hours=6.0, daily_budget=3)
-    pipeline = Pipeline(bus, tracer=tracer)
+    pipeline = runtime.pipeline
 
     # ── Restore state from the event log ────────────────────────────
-    try:
-        events = await event_store.replay_all()
-        if events:
-            await state_engine.rebuild_from_events(events)
-            logger.info("state restored from event log: %d events", len(events))
-        else:
-            state_engine.load_snapshot()
-            logger.info("event log empty; loaded snapshot if available")
-    except Exception:
-        logger.exception("state restore from event log failed; falling back to snapshot")
-        state_engine.load_snapshot()
-
     # Watchdog
     watchdog = RuntimeWatchdog(event_bus=bus, interval_seconds=60.0)
     await watchdog.start()
@@ -100,6 +72,9 @@ async def main():
     # ── Scheduler ──────────────────────────────────────────────────
     scheduler = CognitiveScheduler()
     scheduler.set_event_bus(bus)
+    runtime.scheduler = scheduler
+    if runtime.app is not None:
+        runtime.app.state.scheduler = scheduler
 
     # ── Auto-polling: Chaoxing homework (every 12 hours) ──────────────
     scheduler.add_interval_job(
@@ -168,27 +143,15 @@ async def main():
     scheduler.start()
 
     # ── FastAPI ────────────────────────────────────────────────────
-    app = create_app(
-        event_store=event_store,
-        state_engine=state_engine,
-        snapshot_store=snapshot_store,
-        pipeline=pipeline,
-        tracer=tracer,
-        dead_letter=dead_letter,
-        scheduler=scheduler,
-        web_ui_dist_path="web/dist",
-        settings=settings,
-    )
-    app.state.settings = settings  # expose for workout UI and inspector routes
+    app = runtime.app
+    if app is None:
+        raise RuntimeError("local runtime did not create the API app")
 
     import uvicorn
     api_config = uvicorn.Config(app, host="0.0.0.0", port=8081, log_level="info")
     api_server = uvicorn.Server(api_config)
 
     # ── Telegram ───────────────────────────────────────────────────
-    from src.interface.telegram.router import parse_message, command_to_event
-    from src.interface.telegram.templates import format_output, format_error, format_help
-
     bot = CognitiveOSBot(
         settings,
         bus,
@@ -248,9 +211,8 @@ async def main():
         logger.info("shutting down...")
     finally:
         scheduler.stop()
-        state_engine.save_snapshot()
         await watchdog.stop()
-        await close_db()
+        await runtime.close()
 
 
 if __name__ == "__main__":

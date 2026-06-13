@@ -86,8 +86,6 @@ def inspector_app() -> FastAPI:
         web_ui_dist_path=None,
         settings=settings,
     )
-    app.state.settings = settings
-
     return app
 
 
@@ -136,7 +134,6 @@ def inspector_app_no_token() -> FastAPI:
         web_ui_dist_path=None,
         settings=settings,
     )
-    app.state.settings = settings
     return app
 
 

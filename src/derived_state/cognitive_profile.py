@@ -15,7 +15,7 @@ def audit_cognitive_profile(
     derived: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.fromtimestamp(0, timezone.utc)
     derived = derived or {}
 
     memory_entries = []

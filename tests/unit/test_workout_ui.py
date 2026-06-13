@@ -460,6 +460,9 @@ def test_api_select_session(client, tmp_vault):
     data = resp.json()
     assert data["session"]["training_day"] == "Upper 1"
     assert len(data["session"]["exercises"]) == 5
+    assert data["date"] == "2026-06-01"
+    assert data["available_days"]
+    assert data["recommended_day"]
 
 
 def test_api_select_session_invalid_day(client):

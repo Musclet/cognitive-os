@@ -54,7 +54,10 @@ def test_create_note_from_template(tmp_path, tmp_settings):
     template_dir = tmp_path / "Templates"
     template_dir.mkdir(parents=True)
     template_file = template_dir / "每日打卡模板.md"
-    template_file.write_text("# {{date}} 打卡\n\n## 🎨 绘画训练\n\n\n## 🧾 今日事件流\n")
+    template_file.write_text(
+        "# {{date}} 打卡\n\n## 🎨 绘画训练\n\n\n## 🧾 今日事件流\n",
+        encoding="utf-8",
+    )
 
     date = datetime(2026, 5, 31, tzinfo=LOCAL_TZ)
     path = _daily_note_path(tmp_settings, date)

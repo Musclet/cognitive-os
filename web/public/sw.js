@@ -3,7 +3,6 @@
 
 const CACHE_NAME = 'cogos-v1';
 const STATIC_CACHE = 'cogos-static-v1';
-const API_CACHE = 'cogos-api-v1';
 
 // Assets to pre-cache on install
 const PRECACHE_URLS = [
@@ -30,7 +29,7 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) => {
       return Promise.all(
         keys.filter((key) => {
-          return key !== STATIC_CACHE && key !== API_CACHE && key !== CACHE_NAME;
+          return key !== STATIC_CACHE && key !== CACHE_NAME;
         }).map((key) => caches.delete(key))
       );
     }).then(() => self.clients.claim())
@@ -61,9 +60,9 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   if (!url.protocol.startsWith('http')) return;
 
-  // API requests: Network-first, fallback to cache
+  // Authenticated API data must never be persisted in Cache Storage.
   if (isApiRequest(url)) {
-    event.respondWith(apiNetworkFirst(event.request));
+    event.respondWith(fetch(event.request));
     return;
   }
 
@@ -84,29 +83,6 @@ self.addEventListener('fetch', (event) => {
     fetch(event.request).catch(() => caches.match(event.request))
   );
 });
-
-// API: try network first, fall back to cache
-async function apiNetworkFirst(request) {
-  try {
-    const response = await fetch(request);
-    // Cache successful GET responses
-    if (response.ok) {
-      const cache = await caches.open(API_CACHE);
-      cache.put(request, response.clone());
-    }
-    return response;
-  } catch (err) {
-    const cached = await caches.match(request);
-    if (cached) {
-      return cached;
-    }
-    // If no cache, return a JSON error
-    return new Response(
-      JSON.stringify({ ok: false, message: '离线模式 — 数据不可用', offline: true }),
-      { status: 503, headers: { 'Content-Type': 'application/json' } }
-    );
-  }
-}
 
 // Static assets: cache-first, update cache in background
 async function staticCacheFirst(request) {

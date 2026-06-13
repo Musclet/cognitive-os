@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -17,6 +18,7 @@ from uuid import UUID
 from src.core.events import Event, EventType, AggregateType
 
 logger = logging.getLogger(__name__)
+SNAPSHOT_VERSION = 2
 
 
 class StateEngine:
@@ -36,8 +38,10 @@ class StateEngine:
         self._active_temporal_context: dict[str, Any] = {}
         self._busy_windows: list[dict[str, Any]] = []
         self._recovery_windows: list[dict[str, Any]] = []
+        self._pending_temporal_syncs: dict[str, dict[str, Any]] = {}
         self._applied_event_ids: set[UUID] = set()
         self._applied_count: int = 0
+        self._as_of: datetime | None = None
         self._snapshot_path = Path(snapshot_path) if snapshot_path else None
         self._snapshot_store = snapshot_store
         self._snapshot_interval = snapshot_interval
@@ -54,6 +58,9 @@ class StateEngine:
 
         self._applied_event_ids.add(event.event_id)
         self._applied_count += 1
+        if self._as_of is None or event.timestamp > self._as_of:
+            self._as_of = event.timestamp
+            self._derived_dirty = True
 
         handler = self._get_handler(event.event_type)
         if handler:
@@ -65,11 +72,19 @@ class StateEngine:
 
         # Auto-snapshot at interval
         produced: list[Event] = []
-        if self._snapshot_store and self._applied_count % self._snapshot_interval == 0:
+        snapshot_events = {
+            EventType.SYSTEM_SNAPSHOT_CREATED,
+            EventType.SYSTEM_SNAPSHOT_FAILED,
+        }
+        if (
+            self._snapshot_store
+            and event.event_type not in snapshot_events
+            and self._applied_count % self._snapshot_interval == 0
+        ):
             try:
                 self._compute_derived_if_dirty()
-                last_seq = getattr(event, '_sequence', self._applied_count)
-                await self._snapshot_store.save(self._state, self._applied_count)
+                last_seq = int(getattr(event, "_sequence", self._applied_count))
+                await self._snapshot_store.save(self.snapshot(), last_seq)
                 produced.append(Event(
                     event_type=EventType.SYSTEM_SNAPSHOT_CREATED,
                     aggregate_id="system",
@@ -122,9 +137,30 @@ class StateEngine:
         """Return a full snapshot of current state."""
         self._compute_derived_if_dirty()
         return {
+            "version": SNAPSHOT_VERSION,
             "state": self._state,
             "derived": self._derived,
+            "temporal_blocks": {
+                key: block.to_dict()
+                for key, block in self._temporal_blocks.items()
+            },
+            "temporal_blocks_by_day": self._temporal_blocks_by_day,
+            "active_temporal_context": self._active_temporal_context,
+            "busy_windows": self._busy_windows,
+            "recovery_windows": self._recovery_windows,
+            "pending_temporal_syncs": {
+                source: {
+                    **sync,
+                    "blocks": {
+                        key: block.to_dict()
+                        for key, block in sync.get("blocks", {}).items()
+                    },
+                }
+                for source, sync in self._pending_temporal_syncs.items()
+            },
+            "applied_event_ids": sorted(str(event_id) for event_id in self._applied_event_ids),
             "applied_count": self._applied_count,
+            "as_of": self._as_of.isoformat() if self._as_of else None,
         }
 
     def save_snapshot(self) -> None:
@@ -134,7 +170,8 @@ class StateEngine:
         data = self.snapshot()
         self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         self._snapshot_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, default=str)
+            json.dumps(data, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
         )
         logger.info("snapshot saved to %s", self._snapshot_path)
 
@@ -143,11 +180,8 @@ class StateEngine:
         if not self._snapshot_path or not self._snapshot_path.exists():
             return False
         try:
-            data = json.loads(self._snapshot_path.read_text())
-            self._state = data.get("state", {})
-            self._derived = data.get("derived", {})
-            self._applied_count = data.get("applied_count", 0)
-            self._derived_dirty = False
+            data = json.loads(self._snapshot_path.read_text(encoding="utf-8"))
+            self._restore_snapshot(data)
             logger.info("snapshot loaded from %s", self._snapshot_path)
             return True
         except (json.JSONDecodeError, KeyError) as exc:
@@ -164,8 +198,10 @@ class StateEngine:
         self._active_temporal_context = {}
         self._busy_windows = []
         self._recovery_windows = []
+        self._pending_temporal_syncs = {}
         self._applied_event_ids = set()
         self._applied_count = 0
+        self._as_of = None
         for event in events:
             await self.apply(event)
         self._compute_derived_if_dirty()
@@ -181,10 +217,7 @@ class StateEngine:
             snap = await snapshot_store.get_latest()
             if snap:
                 snap_state, last_seq = snap
-                self._state = snap_state.get("state", snap_state)
-                self._derived = snap_state.get("derived", {})
-                self._applied_count = last_seq
-                self._derived_dirty = True
+                self._restore_snapshot(snap_state, fallback_count=last_seq)
                 logger.info("loaded snapshot at sequence %d", last_seq)
 
                 # Replay remaining events
@@ -199,6 +232,61 @@ class StateEngine:
         all_events = await event_store.replay_all()
         await self.rebuild_from_events(all_events)
         return self.state_hash()
+
+    def _restore_snapshot(self, data: dict[str, Any], fallback_count: int = 0) -> None:
+        """Restore a versioned snapshot, with compatibility for legacy state-only data."""
+        from src.core.temporal import TimeBlock
+
+        is_envelope = "state" in data and (
+            "version" in data or "derived" in data or "applied_count" in data
+        )
+        if not is_envelope:
+            self._state = data
+            self._derived = {}
+            self._temporal_blocks = {}
+            self._temporal_blocks_by_day = {}
+            self._active_temporal_context = {}
+            self._busy_windows = []
+            self._recovery_windows = []
+            self._pending_temporal_syncs = {}
+            self._applied_event_ids = set()
+            self._applied_count = fallback_count
+            self._as_of = None
+            self._derived_dirty = True
+            return
+
+        self._state = data.get("state", {})
+        self._derived = data.get("derived", {})
+        self._temporal_blocks = {
+            key: TimeBlock.from_dict(block)
+            for key, block in data.get("temporal_blocks", {}).items()
+        }
+        self._temporal_blocks_by_day = data.get("temporal_blocks_by_day", {})
+        self._active_temporal_context = data.get("active_temporal_context", {})
+        self._busy_windows = data.get("busy_windows", [])
+        self._recovery_windows = data.get("recovery_windows", [])
+        self._pending_temporal_syncs = {
+            source: {
+                **sync,
+                "blocks": {
+                    key: TimeBlock.from_dict(block)
+                    for key, block in sync.get("blocks", {}).items()
+                },
+            }
+            for source, sync in data.get("pending_temporal_syncs", {}).items()
+        }
+        self._applied_event_ids = {
+            UUID(event_id)
+            for event_id in data.get("applied_event_ids", [])
+        }
+        self._applied_count = int(data.get("applied_count", fallback_count))
+        as_of = data.get("as_of")
+        self._as_of = (
+            datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+            if isinstance(as_of, str) and as_of
+            else None
+        )
+        self._derived_dirty = False
 
     # ── Derived state ────────────────────────────────────────────────────
 
@@ -217,15 +305,16 @@ class StateEngine:
         from src.derived_state.reflection import compute_reflection
         from src.derived_state.adaptation_params import compute_adapted_params
 
+        as_of = self._as_of or datetime.fromtimestamp(0, timezone.utc)
         self._derived["workload"] = compute_workload(self._state)
-        self._derived["deadline_pressure"] = compute_deadline_pressure(self._state)
-        self._derived["activity_density"] = compute_activity_density(self._state)
+        self._derived["deadline_pressure"] = compute_deadline_pressure(self._state, as_of=as_of)
+        self._derived["activity_density"] = compute_activity_density(self._state, as_of=as_of)
         effective_blocks = self.get_temporal_blocks()
-        proj = compute_projection(effective_blocks)
+        proj = compute_projection(effective_blocks, as_of=as_of)
         self._derived["temporal_projection"] = proj.to_dict()
-        self._derived["cognition"] = compute_cognition(self._state, proj.to_dict())
+        self._derived["cognition"] = compute_cognition(self._state, proj.to_dict(), as_of=as_of)
         self._derived["behavior"] = compute_behavior(self._state)
-        self._derived["reflection"] = compute_reflection(self._state)
+        self._derived["reflection"] = compute_reflection(self._state, as_of=as_of)
         adapted_params = compute_adapted_params(
             self._derived["behavior"],
             self._derived["reflection"],
@@ -237,6 +326,7 @@ class StateEngine:
             effective_blocks,
             self._derived["cognition"],
             adaptive,
+            as_of=as_of,
         )
         self._derived_dirty = False
 
@@ -342,6 +432,21 @@ class StateEngine:
         from datetime import timedelta
         try:
             block = TimeBlock.from_dict(event.payload)
+            block_key = "|".join([
+                str(block.source),
+                block.title,
+                block.start.isoformat(),
+                block.end.isoformat(),
+            ])
+            trace_id = str(event.metadata.get("trace_id", ""))
+            pending = self._pending_temporal_syncs.get(str(block.source))
+            if (
+                pending
+                and trace_id
+                and trace_id == pending.get("trace_id")
+            ):
+                pending["blocks"][block_key] = block
+                return
             if str(block.source) == "jwxt" and block.metadata.get("teaching_week"):
                 week_start = block.start.date() - timedelta(days=block.start.weekday())
                 week_end = week_start + timedelta(days=7)
@@ -353,12 +458,6 @@ class StateEngine:
                 ]
                 for key in stale_keys:
                     self._temporal_blocks.pop(key, None)
-            block_key = "|".join([
-                str(block.source),
-                block.title,
-                block.start.isoformat(),
-                block.end.isoformat(),
-            ])
             self._temporal_blocks[block_key] = block
             self._refresh_temporal_views()
             self._derived_dirty = True
@@ -398,17 +497,17 @@ class StateEngine:
     def _on_connector_fetch_started(self, event: Event) -> None:
         """Prepare source-owned temporal state before a fresh connector read."""
         self._update_sync_health(event, "running")
-        if event.payload.get("source") != "google_calendar":
+        source = str(event.payload.get("source", ""))
+        if source not in {"google_calendar", "jwxt"}:
             return
-        stale_keys = [
-            key for key, existing in self._temporal_blocks.items()
-            if str(getattr(existing, "source", "")) == "google_calendar"
-        ]
-        for key in stale_keys:
-            self._temporal_blocks.pop(key, None)
-        self._refresh_temporal_views()
-        if stale_keys:
-            self._derived_dirty = True
+        trace_id = str(event.metadata.get("trace_id", ""))
+        self._pending_temporal_syncs[source] = {
+            "trace_id": trace_id,
+            "calendar_id": event.payload.get("calendar_id", ""),
+            "blocks": {},
+        }
+        if source != "google_calendar":
+            return
         temporal = self._ensure_aggregate("temporal", "projection")
         temporal["calendar_sync"] = {
             **temporal.get("calendar_sync", {}),
@@ -419,10 +518,38 @@ class StateEngine:
         }
 
     def _on_connector_fetch_completed(self, event: Event) -> None:
-        self._update_sync_health(event, "completed")
-        if event.payload.get("source") != "google_calendar":
+        source = str(event.payload.get("source", ""))
+        if source not in {"google_calendar", "jwxt"}:
+            self._update_sync_health(event, "completed")
             return
-        if int(event.payload.get("count", 0) or 0) == 0:
+        trace_id = str(event.metadata.get("trace_id", ""))
+        pending = self._pending_temporal_syncs.get(source)
+        if (
+            pending is not None
+            and trace_id
+            and trace_id != pending.get("trace_id")
+        ):
+            return
+        self._update_sync_health(event, "completed")
+        can_commit = pending is not None and (
+            not trace_id or trace_id == pending.get("trace_id")
+        )
+        if can_commit:
+            stale_keys = [
+                key for key, existing in self._temporal_blocks.items()
+                if str(getattr(existing, "source", "")) == source
+            ]
+            for key in stale_keys:
+                self._temporal_blocks.pop(key, None)
+            self._temporal_blocks.update(pending.get("blocks", {}))
+            self._pending_temporal_syncs.pop(source, None)
+            self._refresh_temporal_views()
+            self._derived_dirty = True
+        elif (
+            source == "google_calendar"
+            and pending is None
+            and int(event.payload.get("count", 0) or 0) == 0
+        ):
             stale_keys = [
                 key for key, existing in self._temporal_blocks.items()
                 if str(getattr(existing, "source", "")) == "google_calendar"
@@ -432,6 +559,8 @@ class StateEngine:
             if stale_keys:
                 self._refresh_temporal_views()
                 self._derived_dirty = True
+        if source != "google_calendar":
+            return
         temporal = self._ensure_aggregate("temporal", "projection")
         temporal["calendar_sync"] = {
             "status": "completed",
@@ -445,7 +574,21 @@ class StateEngine:
         }
 
     def _on_connector_fetch_failed(self, event: Event) -> None:
+        source = str(event.payload.get("source", ""))
+        if source not in {"google_calendar", "jwxt"}:
+            self._update_sync_health(event, "failed")
+            return
+        trace_id = str(event.metadata.get("trace_id", ""))
+        pending = self._pending_temporal_syncs.get(source)
+        if (
+            pending is not None
+            and trace_id
+            and trace_id != pending.get("trace_id")
+        ):
+            return
         self._update_sync_health(event, "failed")
+        if pending is not None:
+            self._pending_temporal_syncs.pop(source, None)
 
     def _on_temporal_block_updated(self, event: Event) -> None:
         self._on_temporal_block_added(event)
@@ -455,6 +598,21 @@ class StateEngine:
         try:
             block = TimeBlock.from_dict(event.payload)
         except Exception:
+            return
+        trace_id = str(event.metadata.get("trace_id", ""))
+        pending = self._pending_temporal_syncs.get(str(block.source))
+        if (
+            pending
+            and trace_id
+            and trace_id == pending.get("trace_id")
+        ):
+            external_id = (block.metadata or {}).get("external_id")
+            if external_id:
+                pending["blocks"] = {
+                    key: existing
+                    for key, existing in pending.get("blocks", {}).items()
+                    if (getattr(existing, "metadata", {}) or {}).get("external_id") != external_id
+                }
             return
         to_remove = []
         for key, existing in self._temporal_blocks.items():
@@ -491,7 +649,7 @@ class StateEngine:
         from datetime import datetime, timezone
         from zoneinfo import ZoneInfo
 
-        now = datetime.now(timezone.utc)
+        now = self._as_of or datetime.fromtimestamp(0, timezone.utc)
         local_tz = ZoneInfo("Asia/Singapore")
         dates: set[str] = set()
         for view in self._state.get("subjective", {}).values():
@@ -534,6 +692,7 @@ class StateEngine:
 
     def _on_recommendation_feedback(self, event: Event) -> None:
         """Store recommendation feedback in behavior log."""
+        self._compute_derived_if_dirty()
         view = self._ensure_aggregate("behavior", "current")
         log = view.get("feedback_log", [])
 
@@ -643,7 +802,7 @@ class StateEngine:
         by_day: dict[str, list[str]] = {}
         busy: list[dict[str, Any]] = []
         recovery: list[dict[str, Any]] = []
-        now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+        now = self._as_of or datetime.fromtimestamp(0, timezone.utc)
         effective_block_keys = {
             "|".join([
                 str(block.source),

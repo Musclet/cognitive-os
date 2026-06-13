@@ -23,12 +23,12 @@ async def handle_daily_review_requested(event: Event, state_engine) -> list[Even
         return []
 
     requested_date = event.payload.get("date")
-    target_date = _parse_date(requested_date) or datetime.now(LOCAL_TZ).date()
+    target_date = _parse_date(requested_date) or event.timestamp.astimezone(LOCAL_TZ).date()
     state_snapshot = state_engine.snapshot()
     state = state_snapshot.get("state", {})
     derived = state_snapshot.get("derived", {})
 
-    audit = audit_cognitive_profile(state, derived, datetime.now(timezone.utc))
+    audit = audit_cognitive_profile(state, derived, event.timestamp)
     card = build_daily_review_card(state_engine, state, derived, audit, target_date)
 
     audit_event = Event(
