@@ -2922,3 +2922,210 @@ class TestSettingsNoDefaultPin:
         resp = client.post("/api/web/auth/login", json={"pin": "123456"})
         assert resp.status_code == 503
         assert "web_ui_pin_not_configured" in resp.json().get("detail", "")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Proposal decision from StateEngine — proposal_id-only fallback
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestProposalDecisionFromStateEngine:
+    """Tests: /api/web/proposals/decision with proposal_id-only via StateEngine."""
+
+    def _login(self, client: TestClient) -> str:
+        resp = client.post("/api/web/auth/login", json={"pin": "1234"})
+        return resp.cookies[COOKIE_NAME]
+
+    @pytest.fixture
+    def se_app(self) -> FastAPI:
+        """App fixture with a real StateEngine seeded with a pending proposal."""
+        from src.core.state_engine import StateEngine
+        from src.core.events import Event, EventType, AggregateType
+        from src.core.proposal import Proposal, ProposalType, TargetSystem
+
+        app = FastAPI()
+        app.include_router(web_router)
+
+        # Settings
+        settings = MagicMock()
+        settings.web_ui_pin = "1234"
+        settings.web_ui_session_secret = "test-secret-key-for-hmac"
+        settings.web_ui_session_days = 7
+        settings.obsidian_vault_path = ""
+        settings.telegram_allowed_users = [123]
+        settings.google_calendar_mock = True
+        settings.google_calendar_write_enabled = True
+        settings.google_calendar_write_requires_acceptance = True
+        app.state.settings = settings
+
+        # Real StateEngine with a pending proposal
+        engine = StateEngine()
+        proposal = Proposal(
+            proposal_type=ProposalType.CREATE_CALENDAR_BLOCK,
+            target_system=TargetSystem.GOOGLE_CALENDAR,
+            action_payload={"title": "Test", "start": "2026-06-06T12:00:00+08:00", "end": "2026-06-06T13:00:00+08:00"},
+            user_id="123",
+        )
+        import asyncio
+        asyncio.run(engine.apply(Event(
+            event_type=EventType.EXECUTION_PROPOSAL_CREATED,
+            aggregate_id=proposal.proposal_id,
+            aggregate_type=AggregateType.SYSTEM,
+            payload=proposal.to_dict(),
+        )))
+        app.state.state_engine = engine
+        app.state._test_proposal_id = proposal.proposal_id
+        app.state._test_proposal = proposal
+
+        # Mock pipeline
+        pipeline = MagicMock()
+        pipeline.run = AsyncMock(return_value=[])
+        app.state.pipeline = pipeline
+
+        return app
+
+    @pytest.fixture
+    def se_app_empty(self) -> FastAPI:
+        """App fixture with a real empty StateEngine (no proposals)."""
+        from src.core.state_engine import StateEngine
+        app = FastAPI()
+        app.include_router(web_router)
+        settings = MagicMock()
+        settings.web_ui_pin = "1234"
+        settings.web_ui_session_secret = "test-secret-key"
+        settings.web_ui_session_days = 7
+        settings.obsidian_vault_path = ""
+        settings.telegram_allowed_users = [123]
+        app.state.settings = settings
+        app.state.state_engine = StateEngine()
+        pipeline = MagicMock()
+        pipeline.run = AsyncMock(return_value=[])
+        app.state.pipeline = pipeline
+        return app
+
+    # ── Test 1: proposal_id-only + StateEngine has proposal → reject works ──
+
+    def test_proposal_id_only_reject(self, se_app: FastAPI):
+        """Reject with only proposal_id succeeds when StateEngine has the proposal."""
+        client = TestClient(se_app)
+        cookie = self._login(client)
+        resp = client.post(
+            "/api/web/proposals/decision",
+            json={"decision": "reject", "proposal_id": se_app.state._test_proposal_id},
+            cookies={COOKIE_NAME: cookie},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["decision"] == "reject"
+        se_app.state.pipeline.run.assert_called_once()
+
+    # ── Test 2: proposal_id-only + StateEngine has proposal → accept works ──
+
+    def test_proposal_id_only_accept(self, se_app: FastAPI):
+        """Accept with only proposal_id succeeds when StateEngine has the proposal."""
+        client = TestClient(se_app)
+        cookie = self._login(client)
+        resp = client.post(
+            "/api/web/proposals/decision",
+            json={"decision": "accept", "proposal_id": se_app.state._test_proposal_id},
+            cookies={COOKIE_NAME: cookie},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["decision"] == "accept"
+
+    # ── Test 3: proposal_id-only but StateEngine cannot find it ────────────
+
+    def test_proposal_id_not_found(self, se_app_empty: FastAPI):
+        """proposal_id that StateEngine cannot find returns a clear error."""
+        client = TestClient(se_app_empty)
+        cookie = self._login(client)
+        resp = client.post(
+            "/api/web/proposals/decision",
+            json={"decision": "accept", "proposal_id": "nonexistent"},
+            cookies={COOKIE_NAME: cookie},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "未找到" in data.get("message", "")
+        assert "proposal_id" in data
+
+    # ── Test 4: Full proposal dict still works (backward compat) ──────────
+
+    def test_full_proposal_backwards_compat(self, se_app: FastAPI):
+        """Sending the full proposal dict still works (old path)."""
+        from src.core.proposal import Proposal, ProposalType, TargetSystem
+        proposal = Proposal(
+            proposal_type=ProposalType.CREATE_CALENDAR_BLOCK,
+            target_system=TargetSystem.GOOGLE_CALENDAR,
+            action_payload={"title": "吃饭", "start": "2026-06-06T12:00:00+08:00", "end": "2026-06-06T13:00:00+08:00"},
+            user_id="123",
+        )
+        se_app.state.pipeline.run.reset_mock()
+        se_app.state.pipeline.run.return_value = []
+        client = TestClient(se_app)
+        cookie = self._login(client)
+        resp = client.post(
+            "/api/web/proposals/decision",
+            json={"decision": "reject", "proposal": proposal.to_dict()},
+            cookies={COOKIE_NAME: cookie},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["decision"] == "reject"
+        se_app.state.pipeline.run.assert_called_once()
+
+    # ── Test 5: Replay recovery — no process cache, only StateEngine ──────
+
+    def test_after_replay_recover_accept(self, se_app: FastAPI):
+        """After replay (no process cache), proposal_id-only accept works."""
+        # The se_app fixture already has a proposal in StateEngine.
+        # Simulate "process restart" by getting the stored proposal_id
+        # and proving the endpoint works without any in-memory proposal list.
+        client = TestClient(se_app)
+        cookie = self._login(client)
+        resp = client.post(
+            "/api/web/proposals/decision",
+            json={"decision": "accept", "proposal_id": se_app.state._test_proposal_id},
+            cookies={COOKIE_NAME: cookie},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        # After accept, the pipeline was called
+        se_app.state.pipeline.run.assert_called()
+
+    # ── Test 6: no decision → error ──────────────────────────────────────
+
+    def test_decision_missing(self, se_app: FastAPI):
+        """Missing decision returns error."""
+        client = TestClient(se_app)
+        cookie = self._login(client)
+        resp = client.post(
+            "/api/web/proposals/decision",
+            json={"proposal_id": se_app.state._test_proposal_id},
+            cookies={COOKIE_NAME: cookie},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+
+    # ── Test 7: no proposal and no proposal_id → error ───────────────────
+
+    def test_no_proposal_no_id(self, se_app: FastAPI):
+        """Neither proposal nor proposal_id → error."""
+        client = TestClient(se_app)
+        cookie = self._login(client)
+        resp = client.post(
+            "/api/web/proposals/decision",
+            json={"decision": "accept"},
+            cookies={COOKIE_NAME: cookie},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert "proposal" in data.get("message", "") or "proposal_id" in data.get("message", "")
