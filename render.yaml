@@ -25,7 +25,7 @@ services:
       - key: GOOGLE_CALENDAR_MOCK
         value: "false"
       - key: GOOGLE_CALENDAR_SCHEDULE_WRITE_ENABLED
-        value: "true"
+        value: "false"
       - key: CHAOXING_MOCK
         value: "true"
       - key: JWXT_MOCK
@@ -53,7 +53,7 @@ services:
       - key: GOOGLE_CALENDAR_MOCK
         value: "false"
       - key: GOOGLE_CALENDAR_SCHEDULE_WRITE_ENABLED
-        value: "true"
+        value: "false"
       - key: CHAOXING_MOCK
         value: "true"
       - key: JWXT_MOCK

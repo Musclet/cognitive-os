@@ -12,6 +12,7 @@ import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -6027,4 +6028,3 @@ class CognitiveOSBot:
             pass
         finally:
             await self.stop()
-

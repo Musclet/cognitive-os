@@ -1568,7 +1568,9 @@ async def test_undo_verbal_scheduling_no_event_id():
 @pytest.mark.asyncio
 async def test_verbal_scheduling_tracks_calendar_id_and_bot_created():
     """_handle_verbal_scheduling_pending saves calendar event id, calendar_id, and bot_created."""
+    from datetime import datetime, timedelta
     from unittest.mock import AsyncMock, MagicMock
+    from zoneinfo import ZoneInfo
     from src.interface.telegram.bot import CognitiveOSBot
     from src.core.bus import EventBus
     from src.core.pipeline import Pipeline
@@ -1590,11 +1592,13 @@ async def test_verbal_scheduling_tracks_calendar_id_and_bot_created():
     bot.state_engine = state_engine
     bot._pending_input = {}
 
-    # Mock DeepSeek to return valid event
+    # Keep the test independent of the wall-clock date.
+    start = datetime.now(ZoneInfo("Asia/Singapore")) + timedelta(days=2)
+    end = start + timedelta(hours=1)
     bot._deepseek_json = AsyncMock(return_value={
         "title": "测试会议",
-        "start": "2026-06-05T14:00:00+08:00",
-        "end": "2026-06-05T15:00:00+08:00",
+        "start": start.isoformat(),
+        "end": end.isoformat(),
         "description": "会议描述",
     })
 

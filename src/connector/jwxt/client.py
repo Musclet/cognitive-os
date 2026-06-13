@@ -75,12 +75,7 @@ class JwxtConnector(Connector):
         return {"source": self.source_name, "error": f"unsupported query: {query}"}
 
     async def _real_weekly_schedule(self) -> dict[str, Any]:
-        # Prefer httpx (lightweight, works on Render), fall back to Playwright
-        try:
-            raw = await self._fetch_schedule_api_httpx()
-        except Exception as e:
-            logger.warning("httpx fetch failed, falling back to Playwright: %s", e)
-            raw = await self._fetch_schedule_api_playwright()
+        raw = await self._fetch_schedule_api()
         kb_list = raw.get("kbList", [])
 
         today = datetime.now(LOCAL_TZ).date()
@@ -106,6 +101,14 @@ class JwxtConnector(Connector):
             "window_days": window_days,
             "teaching_week": current_week,
         }
+
+    async def _fetch_schedule_api(self) -> dict[str, Any]:
+        """Fetch raw schedule data through the preferred transport."""
+        try:
+            return await self._fetch_schedule_api_httpx()
+        except Exception as e:
+            logger.warning("httpx fetch failed, falling back to Playwright: %s", e)
+            return await self._fetch_schedule_api_playwright()
 
     async def _fetch_schedule_api_httpx(self) -> dict[str, Any]:
         """Fetch schedule via httpx using saved cookies — no browser needed (Render-safe)."""

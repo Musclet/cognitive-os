@@ -11,6 +11,14 @@ Default behavior:
 - Avoid beginner-style tutorials unless explicitly requested.
 - Maintain the existing runtime architecture unless the user explicitly asks to redesign it.
 
+## Required Handoff
+
+Before committing or handing work to another agent, follow `docs/HANDOFF.md`.
+At minimum record the base SHA, owned files, initial unrelated dirty files,
+change radius, validation commands, unresolved risks, and one concrete next
+acceptance check. Update `docs/PROJECT_STATUS.md` when the verified baseline or
+priority queue changes.
+
 ## Codex / Claude Code Split
 
 Use Codex as the controller and Claude Code as the executor for broad development tasks.

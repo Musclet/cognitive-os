@@ -93,6 +93,22 @@ def _today() -> date:
     return datetime.now(ZoneInfo(LOCAL_TZ_STR)).date()
 
 
+def _session_payload(vault: str, d: date, session=None) -> dict:
+    """Return the stable response envelope used by all workout endpoints."""
+    current_session = read_session(vault, d) if session is None else session
+    day_name = get_training_day(d)
+    is_training_day = not is_rest_day(d) and day_name in WORKOUT_PLAN
+    return {
+        "session": current_session,
+        "date": d.isoformat(),
+        "weekday": get_weekday_name(d),
+        "planned_day": day_name,
+        "is_training_day": is_training_day or current_session is not None,
+        "available_days": [*WORKOUT_PLAN.keys(), "rest"],
+        "recommended_day": day_name if is_training_day else "Upper 1",
+    }
+
+
 # ── HTML page ──────────────────────────────────────────────────────────────────
 
 
@@ -112,23 +128,7 @@ async def api_get_session(request: Request, date_str: str | None = Query(default
     _require_access(request)
     vault = _vault(request)
     d = date.fromisoformat(date_str) if date_str else _today()
-
-    session = read_session(vault, d)
-    day_name = get_training_day(d)
-    is_training_day = not is_rest_day(d) and day_name in WORKOUT_PLAN
-
-    choices = [*WORKOUT_PLAN.keys(), "rest"]
-    today_name = get_weekday_name(d)
-
-    return {
-        "session": session,
-        "date": d.isoformat(),
-        "weekday": today_name,
-        "planned_day": day_name,
-        "is_training_day": is_training_day or session is not None,
-        "available_days": choices,
-        "recommended_day": day_name if is_training_day else "Upper 1",
-    }
+    return _session_payload(vault, d)
 
 
 @router.post("/api/workout/session/select")
@@ -148,7 +148,7 @@ async def api_select_session(request: Request, body: dict):
         if str(exc) == "session_has_progress":
             raise HTTPException(status_code=409, detail="session_has_progress")
         raise
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/set/update")
@@ -169,7 +169,7 @@ async def api_update_set(request: Request, body: dict):
         )
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/set/add")
@@ -182,7 +182,7 @@ async def api_add_set(request: Request, body: dict):
         session = add_set(vault, d, exercise_index=body["exercise_index"])
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/set/duplicate")
@@ -195,7 +195,7 @@ async def api_duplicate_set(request: Request, body: dict):
         session = duplicate_set(vault, d, exercise_index=body["exercise_index"])
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/set/delete")
@@ -212,7 +212,7 @@ async def api_delete_set(request: Request, body: dict):
         )
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/exercise/move")
@@ -228,7 +228,7 @@ async def api_move_exercise(request: Request, body: dict):
         session = move_exercise(vault, d, exercise_index=body["exercise_index"], direction=direction)
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/exercise/update")
@@ -248,7 +248,7 @@ async def api_update_exercise(request: Request, body: dict):
         )
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/exercise/add")
@@ -276,7 +276,7 @@ async def api_add_exercise(request: Request, body: dict):
         )
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 @router.post("/api/workout/exercise/delete")
@@ -289,7 +289,7 @@ async def api_delete_exercise(request: Request, body: dict):
         session = delete_exercise(vault, d, exercise_index=body["exercise_index"])
     except (FileNotFoundError, ValueError) as e:
         raise HTTPException(status_code=404, detail=str(e))
-    return {"session": session}
+    return _session_payload(vault, d, session)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

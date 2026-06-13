@@ -131,6 +131,7 @@ def create_app(
     app.state.tracer = tracer
     app.state.dead_letter = dead_letter
     app.state.scheduler = scheduler
+    app.state.settings = settings
 
     # ── Workout UI routes ────────────────────────────────────────────
     app.include_router(workout_router)
