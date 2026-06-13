@@ -3075,15 +3075,18 @@ async def web_actions(request: Request, body: dict):
 async def web_proposal_decision(request: Request, body: dict):
     """Accept or reject a Web-held proposal.
 
-    The Web UI keeps the proposal JSON returned by /api/web/actions. This
-    endpoint turns the user's decision into canonical events. Calendar writes
-    only happen through GoogleCalendarExecutor after an accepted proposal.
+    Supports two modes:
+    1. Full proposal dict via body["proposal"] (backward-compatible).
+    2. proposal_id-only via body["proposal_id"] — looks up the full proposal
+       from StateEngine.get_proposal().
+
+    Calendar writes only happen through GoogleCalendarExecutor after an
+    accepted proposal.
     """
     _require_session(request)
 
     decision = str(body.get("decision", "")).strip().lower()
-    proposal_data = body.get("proposal")
-    if decision not in {"accept", "reject"} or not isinstance(proposal_data, dict):
+    if decision not in {"accept", "reject"}:
         return {
             "ok": False,
             "needs_followup": True,
@@ -3092,13 +3095,45 @@ async def web_proposal_decision(request: Request, body: dict):
 
     from src.core.proposal import Proposal, ProposalStatus, ProposalType
 
-    try:
-        proposal = Proposal.from_dict(proposal_data)
-    except Exception:
+    proposal = None
+    proposal_data = body.get("proposal")
+    proposal_id = body.get("proposal_id")
+
+    if isinstance(proposal_data, dict):
+        # Path 1: frontend sent the full proposal dict (backward-compatible)
+        try:
+            proposal = Proposal.from_dict(proposal_data)
+        except Exception:
+            return {
+                "ok": False,
+                "needs_followup": True,
+                "message": "提案格式无效，无法处理。",
+            }
+    elif proposal_id:
+        # Path 2: frontend sent only proposal_id — look up from StateEngine
+        engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
+        stored = engine.get_proposal(str(proposal_id)) if engine else None
+        if stored is None:
+            return {
+                "ok": False,
+                "needs_followup": True,
+                "message": f"提案 {proposal_id} 未找到或已过期。",
+                "proposal_id": proposal_id,
+            }
+        try:
+            proposal = Proposal.from_dict(stored)
+        except Exception:
+            return {
+                "ok": False,
+                "needs_followup": True,
+                "message": "提案数据格式异常，无法处理。",
+                "proposal_id": proposal_id,
+            }
+    else:
         return {
             "ok": False,
             "needs_followup": True,
-            "message": "提案格式无效，无法处理。",
+            "message": "提案参数不完整，需提供 proposal 或 proposal_id。",
         }
 
     user_id = _web_user_id(request)

@@ -185,9 +185,18 @@ export async function postProposalDecision(
   proposal: any,
   decision: 'accept' | 'reject',
 ): Promise<{ ok: boolean; message: string; needs_followup: boolean; event?: any; dashboard?: DashboardData }> {
+  const body: Record<string, any> = { decision };
+  // Always pass proposal_id separately so the backend can look it up from
+  // StateEngine if the full proposal dict becomes stale.
+  if (proposal?.proposal_id) {
+    body.proposal_id = proposal.proposal_id;
+  }
+  if (proposal) {
+    body.proposal = proposal;
+  }
   return request('/api/web/proposals/decision', {
     method: 'POST',
-    body: JSON.stringify({ proposal, decision }),
+    body: JSON.stringify(body),
   });
 }
 
