@@ -202,7 +202,7 @@ def test_projection_busy_density():
                   today.replace(hour=14), today.replace(hour=18), "Afternoon lab"),
     ]
 
-    proj = compute_projection(blocks)
+    proj = compute_projection(blocks, as_of=now)
     assert proj.busy_density > 0.4  # 8h / 17h ≈ 0.47
     assert proj.busy_density < 0.6
     assert proj.daily_capacity < 10  # 17-8 = 9h free
@@ -225,7 +225,7 @@ def test_projection_context_switching():
                   today.replace(hour=18), today.replace(hour=18), "DDL"),
     ]
 
-    proj = compute_projection(blocks)
+    proj = compute_projection(blocks, as_of=now)
     assert proj.context_switching_score > 0.2  # several transitions
     assert proj.source_breakdown["jwxt"] == 2
     assert proj.source_breakdown["google_calendar"] == 1

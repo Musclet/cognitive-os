@@ -21,7 +21,7 @@ def compute_deadline_pressure(
     Output: {closest_deadline_hours, overdue_count, score}
     """
     homework_state = state.get("homework", {})
-    now = as_of or datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
 
     closest_hours: float | None = None
     overdue_count = 0

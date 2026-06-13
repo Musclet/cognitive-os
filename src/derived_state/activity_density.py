@@ -17,7 +17,7 @@ def compute_activity_density(
     Output: {events_last_hour, events_last_24h, score}
     """
     notification_state = state.get("notification", {})
-    now = as_of or datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
     hour_ago = now - timedelta(hours=1)
     day_ago = now - timedelta(hours=24)
 

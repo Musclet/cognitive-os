@@ -39,7 +39,7 @@ def compute_reflection(
             "analysis_period_days": 0,
         }
 
-    now = as_of or datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
 
     # Parse feedbacks with timestamps
     parsed = []

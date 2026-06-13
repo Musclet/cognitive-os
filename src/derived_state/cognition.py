@@ -29,7 +29,7 @@ def compute_cognition(
         deadline_pressure, workload_overload, fatigue_risk,
         recovery_window, stress_projection, next_48h_capacity
     """
-    now = as_of or datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
 
     # Extract inputs
     homework_state = state.get("homework", {})

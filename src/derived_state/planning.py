@@ -28,7 +28,7 @@ def compute_planning(
     Returns:
         recommended_windows, overloaded_days, focus_windows, recovery_slots.
     """
-    now = as_of or datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
     tomorrow = today + timedelta(days=1)
 

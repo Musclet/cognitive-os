@@ -32,7 +32,7 @@ def compute_projection(
     Returns:
         TemporalProjection with free_slots, density, switching, capacity, load.
     """
-    now = as_of or datetime.now(timezone.utc)
+    now = as_of or datetime.fromtimestamp(0, timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     week_start = today_start - timedelta(days=now.weekday())
