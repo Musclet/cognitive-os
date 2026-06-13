@@ -179,6 +179,13 @@ class EventStore:
         try:
             result = await session.execute(text(sql), params or {})
             rows = result.mappings().all()
-            return [Event.from_dict(dict(row)) for row in rows]
+            events = []
+            for row in rows:
+                data = dict(row)
+                event = Event.from_dict(data)
+                if data.get("sequence") is not None:
+                    event._sequence = int(data["sequence"])
+                events.append(event)
+            return events
         finally:
             await session.close()

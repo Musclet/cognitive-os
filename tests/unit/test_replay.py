@@ -235,6 +235,86 @@ async def test_snapshot_fallback_on_corruption():
             await close_db()
 
 
+async def test_database_snapshot_restores_temporal_state_and_sequence():
+    """Automatic DB snapshots preserve temporal projections and event sequence."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "snapshot_temporal.db")
+        await init_db(f"sqlite+aiosqlite:///{db_path}")
+        try:
+            from src.core.bus import EventBus
+            from src.core.pipeline import Pipeline
+
+            event_store = EventStore()
+            snapshot_store = SnapshotStore()
+            bus = EventBus(event_store=event_store)
+            engine = StateEngine(snapshot_store=snapshot_store, snapshot_interval=1)
+            bus.subscribe(EventType.TEMPORAL_BLOCK_ADDED, engine.apply)
+            pipeline = Pipeline(bus)
+
+            start = datetime(2026, 6, 16, 2, 0, tzinfo=timezone.utc)
+            event = Event(
+                EventType.TEMPORAL_BLOCK_ADDED,
+                "db-snapshot-block",
+                AggregateType.TEMPORAL,
+                timestamp=start,
+                payload={
+                    "block_id": "db-snapshot-block",
+                    "source": "jwxt",
+                    "block_type": "class_lecture",
+                    "start": start.isoformat(),
+                    "end": (start + timedelta(hours=1)).isoformat(),
+                    "title": "数据库快照课程",
+                },
+            )
+            await pipeline.run(event)
+
+            latest = await snapshot_store.get_latest()
+            assert latest is not None
+            envelope, last_sequence = latest
+            assert last_sequence == 1
+            assert envelope["version"] == 2
+            assert envelope["temporal_blocks"]
+
+            restored = StateEngine()
+            restored_hash = await restored.rebuild_with_snapshot(event_store, snapshot_store)
+            assert len(restored.get_temporal_blocks()) == 1
+            assert restored.get_temporal_blocks()[0].title == "数据库快照课程"
+            assert restored_hash == engine.state_hash()
+        finally:
+            await close_db()
+
+
+async def test_snapshot_event_does_not_recursively_snapshot():
+    """Snapshot lifecycle events must not trigger another automatic snapshot."""
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "snapshot_recursion.db")
+        await init_db(f"sqlite+aiosqlite:///{db_path}")
+        try:
+            from src.core.bus import EventBus
+            from src.core.pipeline import Pipeline
+
+            event_store = EventStore()
+            snapshot_store = SnapshotStore()
+            bus = EventBus(event_store=event_store)
+            engine = StateEngine(snapshot_store=snapshot_store, snapshot_interval=1)
+            for event_type in EventType:
+                bus.subscribe(event_type, engine.apply)
+
+            events = await Pipeline(bus, max_depth=5).run(Event(
+                EventType.HOMEWORK_NEW,
+                "snapshot-recursion",
+                AggregateType.HOMEWORK,
+                payload={"title": "单次快照", "course": "测试"},
+            ))
+
+            assert [event.event_type for event in events].count(
+                EventType.SYSTEM_SNAPSHOT_CREATED
+            ) == 1
+            assert len(await snapshot_store.get_all()) == 1
+        finally:
+            await close_db()
+
+
 async def run_tests():
     await test_replay_deterministic()
     await test_replay_no_duplicates()

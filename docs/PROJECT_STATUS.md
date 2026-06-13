@@ -9,7 +9,7 @@ Working branch: `codex/project-audit-refactor`
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `902 passed` |
+| Python tests | `904 passed` |
 | Replay and stabilization | `6 passed` |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src`) | PASS |
@@ -37,6 +37,9 @@ batch.
 - Added CI, repository entry documentation, and agent handoff rules.
 - Made time-sensitive derived state use the latest event timestamp.
 - Added replay tests for event-time deadlines and read-order independence.
+- Added versioned snapshots with temporal state, applied IDs, event time, and
+  real EventStore sequence metadata.
+- Prevented snapshot lifecycle events from recursively creating snapshots.
 
 ## Priority Risk Queue
 
@@ -48,12 +51,11 @@ batch.
 
 ### P1 Next
 
-1. Snapshots omit temporal projections and do not form complete recovery points.
-2. Google Calendar fetch start removes last-known-good blocks before success.
-3. JWXT refresh adds blocks but does not reconcile removed or changed classes.
-4. Render and local runtimes use different dependency composition.
-5. EventBus logs and swallows handler failures; DLQ instances are inconsistent.
-6. Approval and undo state is partly held in interface-process memory.
+1. Google Calendar fetch start removes last-known-good blocks before success.
+2. JWXT refresh adds blocks but does not reconcile removed or changed classes.
+3. Render and local runtimes use different dependency composition.
+4. EventBus logs and swallows handler failures; DLQ instances are inconsistent.
+5. Approval and undo state is partly held in interface-process memory.
 
 ### P2 Planned
 
@@ -67,8 +69,7 @@ batch.
 
 ## Next Safe Batch
 
-The next agent should write a failing snapshot recovery test that includes a
-temporal block, then introduce a versioned snapshot envelope containing state,
-derived data, temporal projections, applied IDs/count, event time, and the real
-EventStore sequence. This is a protected-core change and requires the full
-validation pipeline.
+The next agent should protect last-known-good Google Calendar temporal state:
+failed reads must leave existing blocks intact, while a successful completed
+read must atomically reconcile the source snapshot. Add connector lifecycle
+tests before changing StateEngine reconciliation behavior.

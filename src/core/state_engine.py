@@ -18,6 +18,7 @@ from uuid import UUID
 from src.core.events import Event, EventType, AggregateType
 
 logger = logging.getLogger(__name__)
+SNAPSHOT_VERSION = 2
 
 
 class StateEngine:
@@ -70,11 +71,19 @@ class StateEngine:
 
         # Auto-snapshot at interval
         produced: list[Event] = []
-        if self._snapshot_store and self._applied_count % self._snapshot_interval == 0:
+        snapshot_events = {
+            EventType.SYSTEM_SNAPSHOT_CREATED,
+            EventType.SYSTEM_SNAPSHOT_FAILED,
+        }
+        if (
+            self._snapshot_store
+            and event.event_type not in snapshot_events
+            and self._applied_count % self._snapshot_interval == 0
+        ):
             try:
                 self._compute_derived_if_dirty()
-                last_seq = getattr(event, '_sequence', self._applied_count)
-                await self._snapshot_store.save(self._state, self._applied_count)
+                last_seq = int(getattr(event, "_sequence", self._applied_count))
+                await self._snapshot_store.save(self.snapshot(), last_seq)
                 produced.append(Event(
                     event_type=EventType.SYSTEM_SNAPSHOT_CREATED,
                     aggregate_id="system",
@@ -127,9 +136,20 @@ class StateEngine:
         """Return a full snapshot of current state."""
         self._compute_derived_if_dirty()
         return {
+            "version": SNAPSHOT_VERSION,
             "state": self._state,
             "derived": self._derived,
+            "temporal_blocks": {
+                key: block.to_dict()
+                for key, block in self._temporal_blocks.items()
+            },
+            "temporal_blocks_by_day": self._temporal_blocks_by_day,
+            "active_temporal_context": self._active_temporal_context,
+            "busy_windows": self._busy_windows,
+            "recovery_windows": self._recovery_windows,
+            "applied_event_ids": sorted(str(event_id) for event_id in self._applied_event_ids),
             "applied_count": self._applied_count,
+            "as_of": self._as_of.isoformat() if self._as_of else None,
         }
 
     def save_snapshot(self) -> None:
@@ -139,7 +159,8 @@ class StateEngine:
         data = self.snapshot()
         self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
         self._snapshot_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, default=str)
+            json.dumps(data, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
         )
         logger.info("snapshot saved to %s", self._snapshot_path)
 
@@ -148,11 +169,8 @@ class StateEngine:
         if not self._snapshot_path or not self._snapshot_path.exists():
             return False
         try:
-            data = json.loads(self._snapshot_path.read_text())
-            self._state = data.get("state", {})
-            self._derived = data.get("derived", {})
-            self._applied_count = data.get("applied_count", 0)
-            self._derived_dirty = False
+            data = json.loads(self._snapshot_path.read_text(encoding="utf-8"))
+            self._restore_snapshot(data)
             logger.info("snapshot loaded from %s", self._snapshot_path)
             return True
         except (json.JSONDecodeError, KeyError) as exc:
@@ -187,10 +205,7 @@ class StateEngine:
             snap = await snapshot_store.get_latest()
             if snap:
                 snap_state, last_seq = snap
-                self._state = snap_state.get("state", snap_state)
-                self._derived = snap_state.get("derived", {})
-                self._applied_count = last_seq
-                self._derived_dirty = True
+                self._restore_snapshot(snap_state, fallback_count=last_seq)
                 logger.info("loaded snapshot at sequence %d", last_seq)
 
                 # Replay remaining events
@@ -205,6 +220,50 @@ class StateEngine:
         all_events = await event_store.replay_all()
         await self.rebuild_from_events(all_events)
         return self.state_hash()
+
+    def _restore_snapshot(self, data: dict[str, Any], fallback_count: int = 0) -> None:
+        """Restore a versioned snapshot, with compatibility for legacy state-only data."""
+        from src.core.temporal import TimeBlock
+
+        is_envelope = "state" in data and (
+            "version" in data or "derived" in data or "applied_count" in data
+        )
+        if not is_envelope:
+            self._state = data
+            self._derived = {}
+            self._temporal_blocks = {}
+            self._temporal_blocks_by_day = {}
+            self._active_temporal_context = {}
+            self._busy_windows = []
+            self._recovery_windows = []
+            self._applied_event_ids = set()
+            self._applied_count = fallback_count
+            self._as_of = None
+            self._derived_dirty = True
+            return
+
+        self._state = data.get("state", {})
+        self._derived = data.get("derived", {})
+        self._temporal_blocks = {
+            key: TimeBlock.from_dict(block)
+            for key, block in data.get("temporal_blocks", {}).items()
+        }
+        self._temporal_blocks_by_day = data.get("temporal_blocks_by_day", {})
+        self._active_temporal_context = data.get("active_temporal_context", {})
+        self._busy_windows = data.get("busy_windows", [])
+        self._recovery_windows = data.get("recovery_windows", [])
+        self._applied_event_ids = {
+            UUID(event_id)
+            for event_id in data.get("applied_event_ids", [])
+        }
+        self._applied_count = int(data.get("applied_count", fallback_count))
+        as_of = data.get("as_of")
+        self._as_of = (
+            datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+            if isinstance(as_of, str) and as_of
+            else None
+        )
+        self._derived_dirty = False
 
     # ── Derived state ────────────────────────────────────────────────────
 

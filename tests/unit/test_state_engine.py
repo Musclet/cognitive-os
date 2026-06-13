@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, ".")
@@ -71,16 +72,36 @@ async def test_snapshot_roundtrip():
             aggregate_type=AggregateType.HOMEWORK,
             payload={"title": "快照测试", "course": "测试学"},
         ))
+        start = datetime(2026, 6, 15, 8, 0, tzinfo=timezone.utc)
+        await engine.apply(Event(
+            event_type=EventType.TEMPORAL_BLOCK_ADDED,
+            aggregate_id="snapshot-block",
+            aggregate_type=AggregateType.TEMPORAL,
+            timestamp=start,
+            payload={
+                "block_id": "snapshot-block",
+                "source": "jwxt",
+                "block_type": "class_lecture",
+                "start": start.isoformat(),
+                "end": (start + timedelta(hours=1)).isoformat(),
+                "title": "快照课程",
+            },
+        ))
 
         engine.save_snapshot()
         assert snap_path.exists()
-        raw = json.loads(snap_path.read_text())
-        assert raw["applied_count"] == 1
+        raw = json.loads(snap_path.read_text(encoding="utf-8"))
+        assert raw["version"] == 2
+        assert raw["applied_count"] == 2
+        assert raw["temporal_blocks"]
 
         engine2 = StateEngine(snapshot_path=str(snap_path))
         assert engine2.load_snapshot()
         view = engine2.get_view("homework", "hw-1")
         assert view["title"] == "快照测试"
+        assert len(engine2.get_temporal_blocks()) == 1
+        assert engine2.get_temporal_blocks()[0].title == "快照课程"
+        assert engine2.state_hash() == engine.state_hash()
 
         print("✓ snapshot roundtrip")
 

@@ -56,7 +56,8 @@ class EventBus:
 
         # Persist to durable store first (fail-fast: no delivery on persist failure)
         if self._event_store is not None:
-            await self._event_store.append(event)
+            sequence = await self._event_store.append(event)
+            event._sequence = sequence
 
         handlers = self._subscribers.get(event.event_type, [])
         if not handlers:
