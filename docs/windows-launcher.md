@@ -5,7 +5,24 @@
 
 ---
 
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `scripts/launch_web_ui.pyw` | 启动器主程序（Python，无控制台窗口） |
+| **`scripts/launch_web_ui.bat`** | **推荐** — 批处理包装器（有控制台窗口，错误可见） |
+| `scripts/stop_web_ui.ps1` | 停止脚本 |
+| `scripts/create_web_ui_shortcut.ps1` | 创建桌面快捷方式 |
+| `scripts/build_launcher_exe.ps1` | 可选 exe 打包 |
+| `docs/windows-launcher.md` | 本文档 |
+
 ## 一键启动
+
+### 方式 A：双击批处理（推荐）
+
+直接双击 `scripts\launch_web_ui.bat`，会打开一个命令行窗口显示启动进度。
+
+### 方式 B：桌面快捷方式
 
 ### 1. 创建桌面快捷方式
 
