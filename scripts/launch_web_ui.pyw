@@ -48,9 +48,15 @@ logger = logging.getLogger("launcher")
 
 
 def _port_in_use(port: int) -> bool:
-    """Check if a TCP port is already listening."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        return s.connect_ex(("127.0.0.1", port)) == 0
+    """Check if a TCP port is already listening (tries IPv4 and IPv6)."""
+    for family, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                if s.connect_ex((addr, port)) == 0:
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def _check_python() -> str:
@@ -168,9 +174,11 @@ def _start_frontend(npm_exe: str) -> subprocess.Popen | None:
         return None
 
     log_file = LOGS_DIR / "frontend.log"
-    logger.info("Starting frontend: %s run dev", npm_exe)
+    # Clear the frontend log for a fresh start
+    log_file.write_text("", encoding="utf-8")
+    logger.info("Starting frontend: %s run dev --port 5173", npm_exe)
     proc = subprocess.Popen(
-        [npm_exe, "run", "dev"],
+        [npm_exe, "run", "dev", "--", "--port", "5173"],
         cwd=WEB_DIR,
         stdout=open(log_file, "a", encoding="utf-8"),
         stderr=subprocess.STDOUT,
@@ -208,11 +216,22 @@ def main() -> None:
     npm_exe = _check_npm()
     _ensure_npm_installed()
 
-    # 2. Check ports — if both services are running, just open browser
+    # 2. Clean up stale processes from previous launches
+    stale_pids = _read_pids()
+    for key in ("frontend_pid", "backend_pid"):
+        pid = stale_pids.get(key)
+        if pid:
+            try:
+                os.kill(pid, 9)
+                logger.info("Cleaned up stale %s (PID=%d)", key, pid)
+            except OSError:
+                pass  # process already gone
+
+    # 3. Check ports — if both services are running, just open browser
     backend_alive = _port_in_use(8081)
     frontend_alive = _port_in_use(5173)
 
-    # 3. Start backend
+    # 4. Start backend
     backend_proc = _start_backend(python_exe)
     if backend_proc:
         _write_pids({"backend_pid": backend_proc.pid})
