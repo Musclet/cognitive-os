@@ -1831,14 +1831,19 @@ def _system_sync_status(
     produced: list[Event],
     dashboard: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
-    if action != "sync_homework":
+    source_by_action = {
+        "sync_homework": "chaoxing",
+        "sync_schedule": "jwxt",
+    }
+    source = source_by_action.get(action)
+    if source is None:
         return None
 
     terminal = next(
         (
             event
             for event in reversed(produced)
-            if event.payload.get("source") == "chaoxing"
+            if event.payload.get("source") == source
             and event.event_type in {
                 EventType.CONNECTOR_FETCH_COMPLETED,
                 EventType.CONNECTOR_FETCH_FAILED,
@@ -1847,7 +1852,7 @@ def _system_sync_status(
         ),
         None,
     )
-    health = ((dashboard or {}).get("sync_health") or {}).get("chaoxing", {})
+    health = ((dashboard or {}).get("sync_health") or {}).get(source, {})
     payload = terminal.payload if terminal else health
     status = str(payload.get("status") or health.get("status") or "running")
     if terminal:
@@ -1859,9 +1864,11 @@ def _system_sync_status(
             status = "running"
 
     return {
+        "success": status == "completed",
         "status": status,
         "error_code": payload.get("error_code") or health.get("error_code") or "",
         "error": payload.get("error") or health.get("error") or "",
+        "message": payload.get("message") or payload.get("error") or health.get("error") or "",
         "mock_enabled": bool(
             payload.get("mock_enabled", health.get("mock_enabled", False))
         ),
@@ -1869,6 +1876,13 @@ def _system_sync_status(
             payload.get(
                 "pulled_count",
                 payload.get("total_assignments", health.get("pulled_count", 0)),
+            )
+            or 0
+        ),
+        "temporal_blocks_count": int(
+            payload.get(
+                "temporal_blocks_count",
+                payload.get("block_count", health.get("temporal_blocks_count", 0)),
             )
             or 0
         ),
@@ -3634,19 +3648,80 @@ async def web_sync_jwxt(request: Request):
     )
     try:
         produced = await pipeline.run(event)
-        block_count = sum(1 for e in produced if e.event_type == EventType.TEMPORAL_BLOCK_ADDED)
-        failed = any(e.event_type == EventType.CONNECTOR_FETCH_FAILED for e in produced)
-        if failed:
-            err = ""
-            for e in produced:
-                if e.event_type == EventType.CONNECTOR_FETCH_FAILED:
-                    err = e.payload.get("error", "unknown")
-                    break
-            return {"ok": False, "message": f"同步失败: {err}", "count": 0, "events": len(produced)}
-        return {"ok": True, "message": f"课表同步完成，新增 {block_count} 个课程", "count": block_count, "events": len(produced)}
-    except Exception as exc:
-        logger.exception("jwxt sync failed")
-        return {"ok": False, "message": f"同步异常: {exc}", "count": 0, "events": 0}
+        terminal = next(
+            (
+                item
+                for item in reversed(produced)
+                if item.payload.get("source") == "jwxt"
+                and item.event_type in {
+                    EventType.CONNECTOR_FETCH_COMPLETED,
+                    EventType.CONNECTOR_FETCH_FAILED,
+                }
+            ),
+            None,
+        )
+        block_count = sum(
+            1 for item in produced
+            if item.event_type == EventType.TEMPORAL_BLOCK_ADDED
+        )
+        if terminal and terminal.event_type == EventType.CONNECTOR_FETCH_FAILED:
+            error_code = str(terminal.payload.get("error_code") or "jwxt_login_failed")
+            message = str(
+                terminal.payload.get("message")
+                or terminal.payload.get("error")
+                or "JWXT schedule sync failed."
+            )
+            return {
+                "ok": False,
+                "success": False,
+                "error_code": error_code,
+                "message": message,
+                "count": 0,
+                "pulled_count": 0,
+                "temporal_blocks_count": 0,
+                "last_sync_at": (
+                    terminal.payload.get("last_sync_at")
+                    or terminal.timestamp.isoformat()
+                ),
+                "events": len(produced),
+            }
+
+        payload = terminal.payload if terminal else {}
+        temporal_blocks_count = int(
+            payload.get("temporal_blocks_count", payload.get("block_count", block_count))
+            or 0
+        )
+        pulled_count = int(
+            payload.get("pulled_count", payload.get("raw_count", temporal_blocks_count))
+            or 0
+        )
+        return {
+            "ok": True,
+            "success": True,
+            "error_code": "",
+            "message": f"课表同步完成，新增 {temporal_blocks_count} 个课程",
+            "count": temporal_blocks_count,
+            "pulled_count": pulled_count,
+            "temporal_blocks_count": temporal_blocks_count,
+            "last_sync_at": (
+                payload.get("last_sync_at")
+                or (terminal.timestamp.isoformat() if terminal else None)
+            ),
+            "events": len(produced),
+        }
+    except Exception:
+        logger.warning("JWXT sync error_code=jwxt_network_error")
+        return {
+            "ok": False,
+            "success": False,
+            "error_code": "jwxt_network_error",
+            "message": "JWXT schedule sync failed.",
+            "count": 0,
+            "pulled_count": 0,
+            "temporal_blocks_count": 0,
+            "last_sync_at": datetime.now(timezone.utc).isoformat(),
+            "events": 0,
+        }
 
 
 @router.post("/api/web/sync/jwxt/raw")

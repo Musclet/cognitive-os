@@ -10,11 +10,19 @@ import logging
 import re
 from datetime import date, datetime, time, timezone, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    async_playwright = None
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser, BrowserContext, Page
+else:
+    Browser = BrowserContext = Page = Any
 
 from src.connector.base import Connector
 from src.core.events import AggregateType, Event, EventType
@@ -26,6 +34,32 @@ logger = logging.getLogger(__name__)
 
 LOCAL_TZ = timezone(timedelta(hours=8))
 SCHEDULE_PATH = "/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default"
+SCHEDULE_API_PATH = "/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151"
+
+JWXT_ERROR_MESSAGES = {
+    "jwxt_cookie_missing": "JWXT login cookies are not available.",
+    "jwxt_cookie_expired": "JWXT login cookies have expired.",
+    "jwxt_credentials_missing": "JWXT username or password is not configured.",
+    "jwxt_login_failed": "JWXT automatic login failed.",
+    "jwxt_auth_requires_user_action": "JWXT login requires user action.",
+    "jwxt_captcha_required": "JWXT login requires captcha verification.",
+    "jwxt_sso_required": "JWXT login requires SSO or QR-code authentication.",
+    "jwxt_network_error": "JWXT network request failed.",
+    "jwxt_parser_error": "JWXT schedule response could not be parsed.",
+}
+
+
+class JwxtSyncError(RuntimeError):
+    """Structured, sanitized JWXT sync failure."""
+
+    def __init__(self, error_code: str) -> None:
+        self.error_code = error_code
+        super().__init__(
+            JWXT_ERROR_MESSAGES.get(
+                error_code,
+                JWXT_ERROR_MESSAGES["jwxt_login_failed"],
+            )
+        )
 
 PERIOD_TIMES = {
     1: ("08:20", "09:00"),
@@ -52,11 +86,12 @@ class JwxtConnector(Connector):
         self.settings = settings or Settings()
         self._use_mock = use_mock
         self._authenticated = False
+        self._last_auto_login_attempted = False
 
     async def authenticate(self) -> bool:
         self._authenticated = bool(
             self._use_mock
-            or self.settings.jwxt_username
+            or self._credentials_present()
             or Path(self.settings.jwxt_cookies_path).exists()
         )
         return self._authenticated
@@ -103,66 +138,186 @@ class JwxtConnector(Connector):
         }
 
     async def _fetch_schedule_api(self) -> dict[str, Any]:
-        """Fetch raw schedule data through the preferred transport."""
+        """Use saved cookies first, then refresh them with local credentials."""
+        cookie_present = Path(self.settings.jwxt_cookies_path).exists()
+        credentials_present = self._credentials_present()
+        self._last_auto_login_attempted = False
+        self._log_auth_state(
+            cookie_present=cookie_present,
+            credentials_present=credentials_present,
+            auto_login_attempted=False,
+        )
+
+        if cookie_present:
+            try:
+                return await self._fetch_schedule_api_httpx()
+            except JwxtSyncError as exc:
+                if exc.error_code != "jwxt_cookie_expired":
+                    self._log_auth_state(
+                        cookie_present=True,
+                        credentials_present=credentials_present,
+                        auto_login_attempted=False,
+                        error_code=exc.error_code,
+                    )
+                    raise
+        elif not credentials_present:
+            error = JwxtSyncError("jwxt_credentials_missing")
+            self._log_auth_state(
+                cookie_present=False,
+                credentials_present=False,
+                auto_login_attempted=False,
+                error_code=error.error_code,
+            )
+            raise error
+
+        if not credentials_present:
+            error = JwxtSyncError("jwxt_credentials_missing")
+            self._log_auth_state(
+                cookie_present=cookie_present,
+                credentials_present=False,
+                auto_login_attempted=False,
+                error_code=error.error_code,
+            )
+            raise error
+
+        self._last_auto_login_attempted = True
+        try:
+            await self._refresh_cookies_with_playwright()
+        except JwxtSyncError as exc:
+            self._log_auth_state(
+                cookie_present=cookie_present,
+                credentials_present=True,
+                auto_login_attempted=True,
+                error_code=exc.error_code,
+            )
+            raise
+        except Exception:
+            error = JwxtSyncError("jwxt_login_failed")
+            self._log_auth_state(
+                cookie_present=cookie_present,
+                credentials_present=True,
+                auto_login_attempted=True,
+                error_code=error.error_code,
+            )
+            raise error from None
+
         try:
             return await self._fetch_schedule_api_httpx()
-        except Exception as e:
-            logger.warning("httpx fetch failed, falling back to Playwright: %s", e)
-            return await self._fetch_schedule_api_playwright()
+        except JwxtSyncError as exc:
+            error = (
+                JwxtSyncError("jwxt_login_failed")
+                if exc.error_code in {"jwxt_cookie_missing", "jwxt_cookie_expired"}
+                else exc
+            )
+            self._log_auth_state(
+                cookie_present=Path(self.settings.jwxt_cookies_path).exists(),
+                credentials_present=True,
+                auto_login_attempted=True,
+                error_code=error.error_code,
+            )
+            raise error from None
 
     async def _fetch_schedule_api_httpx(self) -> dict[str, Any]:
-        """Fetch schedule via httpx using saved cookies — no browser needed (Render-safe)."""
+        """Fetch schedule via httpx using saved cookies."""
         import httpx
 
         cookie_path = Path(self.settings.jwxt_cookies_path)
-        logger.info("JWXT httpx: cookie_path=%s exists=%s", cookie_path, cookie_path.exists())
         if not cookie_path.exists():
-            raise RuntimeError(f"JWXT cookie file not found: {cookie_path}")
+            raise JwxtSyncError("jwxt_cookie_missing")
 
-        cookies_list = json.loads(cookie_path.read_text("utf-8"))
+        try:
+            cookies_list = json.loads(cookie_path.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            raise JwxtSyncError("jwxt_cookie_expired") from None
+        if not isinstance(cookies_list, list) or not cookies_list:
+            raise JwxtSyncError("jwxt_cookie_expired")
+
         cookies_jar: dict[str, str] = {}
-        for c in cookies_list:
-            cookies_jar[c["name"]] = c["value"]
-        logger.info("JWXT httpx: loaded %d cookies: %s", len(cookies_jar), list(cookies_jar.keys()))
+        try:
+            for item in cookies_list:
+                if not isinstance(item, dict):
+                    raise TypeError
+                name = str(item["name"])
+                value = str(item["value"])
+                if name and value:
+                    cookies_jar[name] = value
+        except (KeyError, TypeError):
+            raise JwxtSyncError("jwxt_cookie_expired") from None
+        if not cookies_jar:
+            raise JwxtSyncError("jwxt_cookie_expired")
 
-        api_url = self._absolute_url("/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151")
-        logger.info("JWXT httpx: POST %s", api_url)
-        async with httpx.AsyncClient(cookies=cookies_jar, timeout=30, follow_redirects=False) as client:
-            r = await client.post(
-                api_url,
-                data={
-                    "xnm": self.settings.jwxt_schedule_year,
-                    "xqm": self.settings.jwxt_schedule_semester,
-                },
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Referer": self._absolute_url("/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default"),
-                },
-            )
-            logger.info("JWXT httpx: response status=%s len=%d", r.status_code, len(r.text))
-            r.raise_for_status()
-            return r.json()
+        try:
+            async with httpx.AsyncClient(
+                cookies=cookies_jar,
+                timeout=30,
+                follow_redirects=False,
+            ) as client:
+                response = await client.post(
+                    self._absolute_url(SCHEDULE_API_PATH),
+                    data={
+                        "xnm": self.settings.jwxt_schedule_year,
+                        "xqm": self.settings.jwxt_schedule_semester,
+                    },
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Referer": self._absolute_url(SCHEDULE_PATH),
+                    },
+                )
+        except httpx.RequestError:
+            raise JwxtSyncError("jwxt_network_error") from None
+        return self._decode_schedule_response(response)
 
-    async def _fetch_schedule_api_playwright(self) -> dict[str, Any]:
-        p = await async_playwright().start()
+    def _decode_schedule_response(self, response: Any) -> dict[str, Any]:
+        status_code = int(getattr(response, "status_code", 0) or 0)
+        location = str(getattr(response, "headers", {}).get("location", ""))
+        if 300 <= status_code < 400:
+            if "login" in location.casefold() or not location:
+                raise JwxtSyncError("jwxt_cookie_expired")
+            raise JwxtSyncError("jwxt_network_error")
+        if status_code < 200 or status_code >= 300:
+            raise JwxtSyncError("jwxt_network_error")
+
+        text = str(getattr(response, "text", "") or "")
+        if self._looks_like_login_response(text):
+            raise JwxtSyncError("jwxt_cookie_expired")
+        try:
+            data = response.json()
+        except (ValueError, TypeError):
+            raise JwxtSyncError("jwxt_parser_error") from None
+        if not isinstance(data, dict) or not isinstance(data.get("kbList"), list):
+            raise JwxtSyncError("jwxt_parser_error")
+        return data
+
+    async def _refresh_cookies_with_playwright(self) -> None:
+        if async_playwright is None:
+            raise JwxtSyncError("jwxt_login_failed")
+
+        playwright = None
         browser: Browser | None = None
         try:
-            browser = await p.chromium.launch(
-                headless=self.settings.jwxt_headless,
-                args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
-            )
+            try:
+                playwright = await async_playwright().start()
+                browser = await playwright.chromium.launch(
+                    headless=self.settings.jwxt_headless,
+                    args=["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"],
+                )
+            except Exception:
+                raise JwxtSyncError("jwxt_login_failed") from None
+
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 locale="zh-CN",
             )
             await self._load_cookies(context)
             page = await context.new_page()
-            await page.goto(
-                self.settings.jwxt_login_url,
-                wait_until="domcontentloaded",
-                timeout=30000,
-            )
-            await page.wait_for_load_state("networkidle", timeout=10000)
+            try:
+                await page.goto(
+                    self.settings.jwxt_login_url,
+                    wait_until="domcontentloaded",
+                    timeout=30000,
+                )
+            except Exception:
+                raise JwxtSyncError("jwxt_network_error") from None
 
             if not await self._is_authenticated(page):
                 await self._login(page)
@@ -170,32 +325,30 @@ class JwxtConnector(Connector):
                     await page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
                     pass
-                await page.wait_for_timeout(5000)
+                try:
+                    await page.goto(
+                        self._absolute_url(SCHEDULE_PATH),
+                        wait_until="domcontentloaded",
+                        timeout=20000,
+                    )
+                except Exception:
+                    raise JwxtSyncError("jwxt_network_error") from None
 
             if not await self._is_authenticated(page):
-                raise RuntimeError("教务登录失败：cookie 失效或账号密码未配置/不正确")
+                raise JwxtSyncError(await self._auth_page_error_code(page))
 
             await self._save_cookies(context)
-            await page.goto(self._absolute_url(SCHEDULE_PATH), wait_until="domcontentloaded", timeout=20000)
-            await page.wait_for_load_state("networkidle", timeout=10000)
-            api_text = await page.evaluate(
-                """(params) => {
-                    return fetch("/kbcx/xskbcx_cxXsgrkb.html?gnmkdm=N2151", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                        body: new URLSearchParams(params).toString()
-                    }).then(r => r.text());
-                }""",
-                {
-                    "xnm": self.settings.jwxt_schedule_year,
-                    "xqm": self.settings.jwxt_schedule_semester,
-                },
-            )
-            return json.loads(api_text)
         finally:
-            if browser:
-                await browser.close()
-            await p.stop()
+            if browser is not None:
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
+            if playwright is not None:
+                try:
+                    await playwright.stop()
+                except Exception:
+                    pass
 
     async def _load_cookies(self, context: BrowserContext) -> bool:
         path = Path(self.settings.jwxt_cookies_path)
@@ -203,12 +356,11 @@ class JwxtConnector(Connector):
             return False
         try:
             cookies = json.loads(path.read_text(encoding="utf-8"))
-            if cookies:
+            if isinstance(cookies, list) and cookies:
                 await context.add_cookies(cookies)
-                logger.info("JWXT cookies loaded from %s", path)
                 return True
-        except Exception as exc:
-            logger.warning("Failed to load JWXT cookies: %s", exc)
+        except Exception:
+            return False
         return False
 
     async def _save_cookies(self, context: BrowserContext) -> None:
@@ -216,24 +368,111 @@ class JwxtConnector(Connector):
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             cookies = await context.cookies()
-            path.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception as exc:
-            logger.warning("Failed to save JWXT cookies: %s", exc)
+            path.write_text(
+                json.dumps(cookies, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            raise JwxtSyncError("jwxt_login_failed") from None
 
     async def _is_authenticated(self, page: Page) -> bool:
-        if "index_initMenu" in page.url or "index_menu" in page.url:
+        url = str(getattr(page, "url", "") or "").casefold()
+        if "index_initmenu" in url or "index_menu" in url or "/kbcx/" in url:
             return True
+        if "login" in url:
+            return False
+        return not await self._has_login_form(page)
+
+    async def _login(self, page: Page) -> None:
+        if not self._credentials_present():
+            raise JwxtSyncError("jwxt_credentials_missing")
+        if await self._captcha_visible(page):
+            raise JwxtSyncError("jwxt_captcha_required")
+        if not await self._has_login_form(page):
+            raise JwxtSyncError(await self._auth_page_error_code(page))
         try:
-            return bool(await page.locator("text=信息查询").first.text_content(timeout=2000))
+            await page.fill("#yhm", self.settings.jwxt_username)
+            await page.fill("#mm", self.settings.jwxt_password)
+            await page.click("#dl")
+        except Exception:
+            raise JwxtSyncError("jwxt_auth_requires_user_action") from None
+
+    async def _has_login_form(self, page: Page) -> bool:
+        return (
+            await self._selector_visible(page, "#yhm")
+            and await self._selector_visible(page, "#mm")
+            and await self._selector_visible(page, "#dl")
+        )
+
+    async def _captcha_visible(self, page: Page) -> bool:
+        selectors = (
+            "#yzm",
+            "#yzmPic",
+            "input[name*='yzm' i]",
+            "input[id*='captcha' i]",
+            "[class*='captcha' i]",
+            "[class*='slider' i]",
+        )
+        for selector in selectors:
+            if await self._selector_visible(page, selector):
+                return True
+        return False
+
+    async def _sso_visible(self, page: Page) -> bool:
+        url = str(getattr(page, "url", "") or "").casefold()
+        if any(marker in url for marker in ("sso", "cas/login", "oauth")):
+            return True
+        for selector in ("text=统一身份认证", "text=扫码登录", "text=二维码"):
+            if await self._selector_visible(page, selector):
+                return True
+        return False
+
+    async def _auth_page_error_code(self, page: Page) -> str:
+        if await self._captcha_visible(page):
+            return "jwxt_captcha_required"
+        if not await self._has_login_form(page):
+            if await self._sso_visible(page):
+                return "jwxt_sso_required"
+            return "jwxt_auth_requires_user_action"
+        return "jwxt_login_failed"
+
+    async def _selector_visible(self, page: Page, selector: str) -> bool:
+        try:
+            return bool(await page.locator(selector).first.is_visible(timeout=1000))
         except Exception:
             return False
 
-    async def _login(self, page: Page) -> None:
-        if not self.settings.jwxt_username or not self.settings.jwxt_password:
-            raise RuntimeError("JWXT_USERNAME/JWXT_PASSWORD 未配置")
-        await page.fill("#yhm", self.settings.jwxt_username)
-        await page.fill("#mm", self.settings.jwxt_password)
-        await page.click("#dl")
+    def _credentials_present(self) -> bool:
+        return bool(
+            str(self.settings.jwxt_username or "").strip()
+            and str(self.settings.jwxt_password or "").strip()
+        )
+
+    def _log_auth_state(
+        self,
+        *,
+        cookie_present: bool,
+        credentials_present: bool,
+        auto_login_attempted: bool,
+        error_code: str = "",
+    ) -> None:
+        logger.info(
+            "JWXT auth cookie_present=%s credentials_present=%s "
+            "auto_login_attempted=%s error_code=%s",
+            cookie_present,
+            credentials_present,
+            auto_login_attempted,
+            error_code,
+        )
+
+    @staticmethod
+    def _looks_like_login_response(text: str) -> bool:
+        lowered = text.casefold()
+        return (
+            "login_slogin" in lowered
+            or 'id="yhm"' in lowered
+            or "id='yhm'" in lowered
+        )
 
     def _absolute_url(self, path: str) -> str:
         parsed = urlparse(self.settings.jwxt_login_url)
@@ -424,6 +663,8 @@ class JwxtConnector(Connector):
                     metadata={"source": self.source_name, "trace_id": trace_id},
                 ))
 
+            raw_count = data.get("raw_count")
+            pulled_count = int(raw_count if raw_count is not None else len(blocks_raw))
             produced.append(Event(
                 event_type=EventType.CONNECTOR_FETCH_COMPLETED,
                 aggregate_id=event.aggregate_id,
@@ -431,11 +672,16 @@ class JwxtConnector(Connector):
                 causation_id=event.event_id,
                 payload={
                     "source": self.source_name,
+                    "success": True,
                     "course_count": len(unique_courses),
                     "block_count": len(blocks_raw),
-                    "raw_count": data.get("raw_count"),
+                    "temporal_blocks_count": len(blocks_raw),
+                    "raw_count": raw_count,
+                    "pulled_count": pulled_count,
                     "teaching_week": data.get("teaching_week"),
                     "intent": event.payload.get("intent", ""),
+                    "auto_login_attempted": self._last_auto_login_attempted,
+                    "last_sync_at": datetime.now(timezone.utc).isoformat(),
                 },
                 metadata={"source": self.source_name, "trace_id": trace_id},
             ))
@@ -443,15 +689,42 @@ class JwxtConnector(Connector):
             return produced
 
         except Exception as exc:
-            logger.exception("JWXT fetch failed")
+            error_code = _classify_jwxt_error(exc)
+            message = JWXT_ERROR_MESSAGES[error_code]
+            self._log_auth_state(
+                cookie_present=Path(self.settings.jwxt_cookies_path).exists(),
+                credentials_present=self._credentials_present(),
+                auto_login_attempted=self._last_auto_login_attempted,
+                error_code=error_code,
+            )
             return [started_event, Event(
                 event_type=EventType.CONNECTOR_FETCH_FAILED,
                 aggregate_id=event.aggregate_id,
                 aggregate_type=AggregateType.SYSTEM,
                 causation_id=event.event_id,
-                payload={"source": self.source_name, "error": str(exc)},
+                payload={
+                    "source": self.source_name,
+                    "success": False,
+                    "error_code": error_code,
+                    "error": message,
+                    "message": message,
+                    "pulled_count": 0,
+                    "temporal_blocks_count": 0,
+                    "auto_login_attempted": self._last_auto_login_attempted,
+                    "last_sync_at": datetime.now(timezone.utc).isoformat(),
+                },
                 metadata={"source": self.source_name, "trace_id": trace_id},
             )]
+
+
+def _classify_jwxt_error(exc: Exception) -> str:
+    if isinstance(exc, JwxtSyncError):
+        return exc.error_code
+    if isinstance(exc, (json.JSONDecodeError, KeyError, TypeError, ValueError)):
+        return "jwxt_parser_error"
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return "jwxt_network_error"
+    return "jwxt_login_failed"
 
 
 def _make_block(

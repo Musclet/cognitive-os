@@ -536,6 +536,7 @@ class TestDashboard:
             "sync": {
                 "jwxt": {
                     "status": "failed",
+                    "error_code": "jwxt_cookie_expired",
                     "error": "教务登录失败：cookie 失效",
                 }
             }
@@ -548,6 +549,7 @@ class TestDashboard:
         data = resp.json()
         assert data["schedule_count"] == 0
         assert data["schedule_empty_reason"] == "schedule_empty_auth_failed"
+        assert data["sync_health"]["jwxt"]["error_code"] == "jwxt_cookie_expired"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2946,6 +2948,100 @@ class TestSystemAction:
         assert event.event_type == EventType.SYSTEM_SCHEDULED_TRIGGER
         assert event.payload["action"] == "schedule_daily_sync"
         assert event.payload["source"] == "web_ui_system"
+
+    def test_sync_schedule_returns_structured_auth_failure(self, client: TestClient, app: FastAPI):
+        failed = Event(
+            event_type=EventType.CONNECTOR_FETCH_FAILED,
+            aggregate_id="web_schedule_daily_sync",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={
+                "source": "jwxt",
+                "success": False,
+                "error_code": "jwxt_auth_requires_user_action",
+                "error": "JWXT login requires user action.",
+                "pulled_count": 0,
+                "temporal_blocks_count": 0,
+                "last_sync_at": "2026-06-18T12:00:00+00:00",
+            },
+        )
+        app.state.pipeline.run = AsyncMock(return_value=[failed])
+        cookie = self._login(client)
+
+        resp = client.post(
+            "/api/web/system/action",
+            json={"action": "sync_schedule"},
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["sync_status"]["success"] is False
+        assert data["sync_status"]["error_code"] == "jwxt_auth_requires_user_action"
+        assert data["sync_status"]["pulled_count"] == 0
+        assert data["sync_status"]["temporal_blocks_count"] == 0
+
+    def test_sync_schedule_returns_counts_on_success(self, client: TestClient, app: FastAPI):
+        completed = Event(
+            event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+            aggregate_id="web_schedule_daily_sync",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={
+                "source": "jwxt",
+                "success": True,
+                "pulled_count": 4,
+                "block_count": 3,
+                "temporal_blocks_count": 3,
+                "last_sync_at": "2026-06-18T12:00:00+00:00",
+            },
+        )
+        app.state.pipeline.run = AsyncMock(return_value=[completed])
+        cookie = self._login(client)
+
+        resp = client.post(
+            "/api/web/system/action",
+            json={"action": "sync_schedule"},
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["sync_status"]["success"] is True
+        assert data["sync_status"]["pulled_count"] == 4
+        assert data["sync_status"]["temporal_blocks_count"] == 3
+        assert data["sync_status"]["last_sync_at"] == "2026-06-18T12:00:00+00:00"
+
+    def test_direct_jwxt_sync_api_returns_structured_failure(self, client: TestClient, app: FastAPI):
+        failed = Event(
+            event_type=EventType.CONNECTOR_FETCH_FAILED,
+            aggregate_id="jwxt",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={
+                "source": "jwxt",
+                "success": False,
+                "error_code": "jwxt_credentials_missing",
+                "message": "JWXT username or password is not configured.",
+                "pulled_count": 0,
+                "temporal_blocks_count": 0,
+                "last_sync_at": "2026-06-18T12:00:00+00:00",
+            },
+        )
+        app.state.pipeline.run = AsyncMock(return_value=[failed])
+        cookie = self._login(client)
+
+        resp = client.post(
+            "/api/web/sync/jwxt",
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["success"] is False
+        assert data["error_code"] == "jwxt_credentials_missing"
+        assert data["pulled_count"] == 0
+        assert data["temporal_blocks_count"] == 0
 
     def test_sync_homework_returns_structured_failure(self, client: TestClient, app: FastAPI):
         failed = Event(
