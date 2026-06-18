@@ -537,3 +537,186 @@ def test_dashboard_empty_reason_for_jwxt_error_codes(error_code, expected_reason
         "jwxt": {"status": "failed", "error_code": error_code},
     }
     assert _reason(schedule, health) == expected_reason
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Error-reading timing — error text read before schedule navigation
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_login_failure_classified_before_schedule_goto_invalid_credentials(
+    tmp_path,
+):
+    """When login fails with '用户名或密码不正确',
+    _refresh_cookies_with_playwright should raise jwxt_invalid_credentials
+    BEFORE attempting to navigate to the schedule page."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_invalid_credentials")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_invalid_credentials"
+    assert failed.payload["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_login_failure_classified_before_schedule_goto_invalid_password(
+    tmp_path,
+):
+    """When login fails with '密码错误',
+    _refresh_cookies_with_playwright should raise jwxt_invalid_password
+    before schedule navigation."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_invalid_password")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_invalid_password"
+
+
+@pytest.mark.asyncio
+async def test_login_failure_classified_before_schedule_goto_unknown(
+    tmp_path,
+):
+    """When login fails but error text is unclassifiable,
+    _refresh_cookies_with_playwright should raise jwxt_login_failed_unknown
+    before schedule navigation."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_login_failed_unknown")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_login_failed_unknown"
+
+
+@pytest.mark.asyncio
+async def test_login_success_still_proceeds_to_schedule_path(tmp_path):
+    """When _refresh_cookies_with_playwright succeeds (login worked),
+    the flow should still proceed to fetch schedule via httpx."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=[
+            JwxtSyncError("jwxt_cookie_expired"),
+            {"kbList": []},
+        ]
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(return_value=None)
+
+    result = await connector._fetch_schedule_api()
+    assert result == {"kbList": []}
+    assert connector._fetch_schedule_api_httpx.await_count == 2
+    connector._refresh_cookies_with_playwright.assert_awaited_once()
+    assert connector._last_auto_login_attempted is True
+
+
+@pytest.mark.asyncio
+async def test_timing_fix_errors_do_not_leak_sentinels(tmp_path, caplog):
+    """Error codes from timing fix must not leak sentinel values."""
+    caplog.set_level(logging.INFO)
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+
+    for code in (
+        "jwxt_invalid_credentials",
+        "jwxt_invalid_password",
+        "jwxt_login_failed_unknown",
+    ):
+        connector = JwxtConnector(use_mock=False, settings=settings)
+        connector._fetch_schedule_api_httpx = AsyncMock(
+            side_effect=JwxtSyncError("jwxt_cookie_expired")
+        )
+        connector._refresh_cookies_with_playwright = AsyncMock(
+            side_effect=JwxtSyncError(code)
+        )
+
+        events = await connector.handle_fetch_request(_fetch_event())
+        failed = next(
+            event for event in events
+            if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+        )
+        rendered = f"{failed.payload} {caplog.text}"
+
+        assert SENTINEL_USERNAME not in rendered
+        assert SENTINEL_PASSWORD not in rendered
+        assert SENTINEL_COOKIE not in rendered
+
+
+@pytest.mark.asyncio
+async def test_timing_fix_dashboard_mapping(tmp_path):
+    """After timing fix, new error codes still map to
+    schedule_empty_auth_failed in Dashboard."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_invalid_credentials")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+    engine = StateEngine()
+    for event in events:
+        await engine.apply(event)
+
+    dashboard = build_dashboard(engine, settings, as_of=datetime.now(LOCAL_TZ))
+    assert dashboard["schedule_count"] == 0
+    assert dashboard["schedule_empty_reason"] == "schedule_empty_auth_failed"
+    assert dashboard["sync_health"]["jwxt"]["error_code"] == "jwxt_invalid_credentials"
