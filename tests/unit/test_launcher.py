@@ -17,6 +17,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 LAUNCHER_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "launch_web_ui.pyw"
+SHORTCUT_SCRIPT_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "scripts" / "create_web_ui_shortcut.ps1"
+)
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -114,6 +117,10 @@ def test_stop_script_kills_only_launcher_pids():
     assert "launcher-pids.json" in content
     assert "backend_pid" in content
     assert "frontend_pid" in content
+    assert "$processId =" in content
+    assert "$pid =" not in content
+    assert "Get-DescendantProcessIds" in content
+    assert "Stop-LauncherProcessTree" in content
 
 
 # ── Test 7: shutil_which (minimal which) ───────────────────────────────
@@ -126,6 +133,18 @@ def test_shutil_which_finds_python():
     result = shutil_which("python")
     assert result is not None
     assert os.path.exists(result)
+
+
+def test_check_python_prefers_sibling_of_pythonw(tmp_path: Path):
+    """A shortcut-launched pythonw resolves the matching real python.exe."""
+    pythonw = tmp_path / "pythonw.exe"
+    python = tmp_path / "python.exe"
+    pythonw.touch()
+    python.touch()
+
+    ns = _get_launcher_ns()
+    with patch.object(sys, "executable", str(pythonw)):
+        assert ns["_check_python"]() == str(python)
 
 
 # ── Test 8: No non-stdlib imports ──────────────────────────────────────
@@ -249,6 +268,16 @@ def test_browser_url_opens_app_path():
     with open(LAUNCHER_PATH, encoding="utf-8") as f:
         code = f.read()
     assert "localhost:5173/app/" in code
+
+
+def test_desktop_shortcut_runs_python_launcher():
+    """The shortcut passes the Python launcher, not a batch file, to pythonw."""
+    code = SHORTCUT_SCRIPT_PATH.read_text(encoding="utf-8")
+    assert '\\scripts\\launch_web_ui.pyw"' in code
+    assert '$lnk.TargetPath = $pythonw' in code
+    assert '\\scripts\\launch_web_ui.bat"' not in code
+    assert "Join-Path $env:LOCALAPPDATA" in code
+    assert 'Microsoft\\WindowsApps' in code
 
 
 # ── Test 12: Stdlib imports include urllib ───────────────────────────────

@@ -89,6 +89,8 @@ class StateEngine:
                     event_type=EventType.SYSTEM_SNAPSHOT_CREATED,
                     aggregate_id="system",
                     aggregate_type=AggregateType.SYSTEM,
+                    timestamp=event.timestamp,
+                    causation_id=event.event_id,
                     payload={"applied_count": self._applied_count},
                 ))
                 logger.info("auto-snapshot at %d events", self._applied_count)
@@ -98,6 +100,8 @@ class StateEngine:
                     event_type=EventType.SYSTEM_SNAPSHOT_FAILED,
                     aggregate_id="system",
                     aggregate_type=AggregateType.SYSTEM,
+                    timestamp=event.timestamp,
+                    causation_id=event.event_id,
                     payload={"error": str(exc)},
                 ))
 

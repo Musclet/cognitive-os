@@ -88,25 +88,46 @@ $stopped = @()
 $notFound = @()
 
 
+function Get-DescendantProcessIds {
+    param([int]$ParentProcessId)
+
+    $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentProcessId"
+    foreach ($child in $children) {
+        $childId = [int]$child.ProcessId
+        Get-DescendantProcessIds -ParentProcessId $childId
+        $childId
+    }
+}
+
+
+function Stop-LauncherProcessTree {
+    param([int]$RootProcessId)
+
+    Get-Process -Id $RootProcessId -ErrorAction Stop | Out-Null
+    $descendantIds = @(Get-DescendantProcessIds -ParentProcessId $RootProcessId)
+    foreach ($targetId in $descendantIds) {
+        Stop-Process -Id $targetId -Force -ErrorAction SilentlyContinue
+    }
+    Stop-Process -Id $RootProcessId -Force -ErrorAction Stop
+}
+
+
 
 
 
 if ($pids.backend_pid) {
 
 
-    $pid = [int]$pids.backend_pid
+    $processId = [int]$pids.backend_pid
 
 
     try {
 
 
-        $proc = Get-Process -Id $pid -ErrorAction Stop
+        Stop-LauncherProcessTree -RootProcessId $processId
 
 
-        Stop-Process -Id $pid -Force -ErrorAction Stop
-
-
-        Write-Host "已停止后端 (PID: $pid)" -ForegroundColor Green
+        Write-Host "已停止后端 (PID: $processId)" -ForegroundColor Green
 
 
         $stopped += "backend"
@@ -115,7 +136,7 @@ if ($pids.backend_pid) {
     } catch {
 
 
-        Write-Host "后端进程 (PID: $pid) 未在运行，可能已关闭。" -ForegroundColor Yellow
+        Write-Host "后端进程 (PID: $processId) 未在运行，可能已关闭。" -ForegroundColor Yellow
 
 
         $notFound += "backend"
@@ -133,19 +154,16 @@ if ($pids.backend_pid) {
 if ($pids.frontend_pid) {
 
 
-    $pid = [int]$pids.frontend_pid
+    $processId = [int]$pids.frontend_pid
 
 
     try {
 
 
-        $proc = Get-Process -Id $pid -ErrorAction Stop
+        Stop-LauncherProcessTree -RootProcessId $processId
 
 
-        Stop-Process -Id $pid -Force -ErrorAction Stop
-
-
-        Write-Host "已停止前端 (PID: $pid)" -ForegroundColor Green
+        Write-Host "已停止前端 (PID: $processId)" -ForegroundColor Green
 
 
         $stopped += "frontend"
@@ -154,7 +172,7 @@ if ($pids.frontend_pid) {
     } catch {
 
 
-        Write-Host "前端进程 (PID: $pid) 未在运行，可能已关闭。" -ForegroundColor Yellow
+        Write-Host "前端进程 (PID: $processId) 未在运行，可能已关闭。" -ForegroundColor Yellow
 
 
         $notFound += "frontend"
