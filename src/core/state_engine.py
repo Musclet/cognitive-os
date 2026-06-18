@@ -856,6 +856,53 @@ class StateEngine:
                 return proposals[proposal_id]
         return None
 
+    def get_undo_action(self, action_id: str) -> dict | None:
+        """Retrieve a pending undo action by action_id from the durable aggregate.
+
+        Searches undo/actions.pending_actions for the given action_id.
+        Returns the action dict (with action_type, params, user_id, reverted, etc.)
+        or None if not found.
+        """
+        view = self._ensure_aggregate("undo", "actions")
+        pending = view.get("pending_actions", {})
+        return pending.get(action_id)
+
+    def get_recent_undo_actions(
+        self,
+        user_id: str | None = None,
+        limit: int = 20,
+        include_reverted: bool = False,
+    ) -> list[dict]:
+        """Return recent undoable actions for optional filtering by user_id.
+
+        Reads from undo/actions.pending_actions and recent_action_ids order.
+        Returns action metadata compatible with Web UI recent action response.
+        """
+        view = self._ensure_aggregate("undo", "actions")
+        pending = view.get("pending_actions", {})
+        recent_ids = view.get("recent_action_ids", [])
+        rows: list[dict] = []
+        for aid in recent_ids:
+            action = pending.get(aid)
+            if action is None:
+                continue
+            if not include_reverted and action.get("reverted"):
+                continue
+            action_user = str(action.get("user_id") or "")
+            if user_id and action_user and action_user != str(user_id):
+                continue
+            rows.append({
+                "action_id": aid,
+                "action_type": action.get("action_type", ""),
+                "params": action.get("params", {}),
+                "timestamp": action.get("timestamp", ""),
+                "reverted": bool(action.get("reverted", False)),
+                "can_undo": not bool(action.get("reverted")),
+            })
+            if len(rows) >= limit:
+                break
+        return rows
+
     def _refresh_temporal_views(self) -> None:
         by_day: dict[str, list[str]] = {}
         busy: list[dict[str, Any]] = []
@@ -1344,7 +1391,11 @@ class StateEngine:
         view["by_category"] = {}
 
     def _on_finance_transaction_recorded(self, event: Event) -> None:
-        """Record a finance transaction and update monthly state."""
+        """Record a finance transaction and update monthly state.
+
+        Also records an undoable action in the undo/pending aggregate so that
+        the Web UI can undo this transaction after a process restart.
+        """
         view = self._ensure_aggregate("finance", "monthly")
         self._ensure_finance_current_month(view, event)
         amount = float(event.payload.get("amount", 0))
@@ -1369,10 +1420,33 @@ class StateEngine:
         if category == "outing":
             view["outing_spent"] = view.get("outing_spent", 0) + amount
 
+        # Record undoable action metadata
+        undo_action_id = f"undo-{str(event.event_id)[:12]}"
+        undo_view = self._ensure_aggregate("undo", "actions")
+        pending = undo_view.get("pending_actions", {})
+        if undo_action_id not in pending:
+            pending[undo_action_id] = {
+                "action_id": undo_action_id,
+                "action_type": "finance_transaction",
+                "params": {"amount": amount, "category": category},
+                "user_id": event.payload.get("user_id", "default"),
+                "reverted": False,
+                "timestamp": event.timestamp.isoformat(),
+            }
+            undo_view["pending_actions"] = pending
+            # Keep recent undo ids for listing
+            recent = undo_view.get("recent_action_ids", [])
+            recent.insert(0, undo_action_id)
+            undo_view["recent_action_ids"] = recent[:100]
+
         self._derived_dirty = True
 
     def _on_finance_income_recorded(self, event: Event) -> None:
-        """Record income for the month."""
+        """Record income for the month.
+
+        Also records an undoable action in the undo/pending aggregate so that
+        the Web UI can undo this income after a process restart.
+        """
         view = self._ensure_aggregate("finance", "monthly")
         self._ensure_finance_current_month(view, event)
         amount = float(event.payload.get("amount", 0))
@@ -1388,6 +1462,25 @@ class StateEngine:
         })
         view["income_log"] = income_log[-100:]
         view["inflow"] = view.get("inflow", 0) + amount
+
+        # Record undoable action metadata
+        undo_action_id = f"undo-{str(event.event_id)[:12]}"
+        undo_view = self._ensure_aggregate("undo", "actions")
+        pending = undo_view.get("pending_actions", {})
+        if undo_action_id not in pending:
+            pending[undo_action_id] = {
+                "action_id": undo_action_id,
+                "action_type": "finance_income",
+                "params": {"amount": amount},
+                "user_id": event.payload.get("user_id", "default"),
+                "reverted": False,
+                "timestamp": event.timestamp.isoformat(),
+            }
+            undo_view["pending_actions"] = pending
+            recent = undo_view.get("recent_action_ids", [])
+            recent.insert(0, undo_action_id)
+            undo_view["recent_action_ids"] = recent[:100]
+
         self._derived_dirty = True
 
     def _on_finance_budget_updated(self, event: Event) -> None:
@@ -1644,7 +1737,11 @@ class StateEngine:
     # ── Undo / Revoke handlers ──────────────────────────────────────────
 
     def _on_user_action_reverted(self, event: Event) -> None:
-        """Handle revert of a tracked action. For finance, reverses amounts."""
+        """Handle revert of a tracked action. For finance, reverses amounts.
+
+        Also marks the pending action in undo/actions as reverted so that
+        post-restart StateEngine state reflects the correct reverted status.
+        """
         view = self._ensure_aggregate("undo", event.aggregate_id)
         action_id = event.payload.get("action_id")
         reverted = view.get("reverted_actions", [])
@@ -1656,6 +1753,14 @@ class StateEngine:
             "reverted_at": event.timestamp.isoformat(),
         })
         view["reverted_actions"] = reverted[-50:]
+
+        # Also mark the pending action as reverted in undo/actions aggregate
+        undo_actions_view = self._ensure_aggregate("undo", "actions")
+        pending = undo_actions_view.get("pending_actions", {})
+        if action_id and action_id in pending:
+            pending[action_id]["reverted"] = True
+            pending[action_id]["reverted_at"] = event.timestamp.isoformat()
+            undo_actions_view["pending_actions"] = pending
 
         # Finance outflow: reverse amounts
         if event.payload.get("action_type") == "finance_transaction":

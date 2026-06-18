@@ -268,7 +268,7 @@ async def mobile_finance_action(request: Request, body: dict):
                 event_type=EventType.FINANCE_TRANSACTION_RECORDED,
                 aggregate_id=user_id,
                 aggregate_type=AggregateType.FINANCE,
-                payload={"amount": amount, "category": category, "description": description or f"spend {amount}"},
+                payload={"amount": amount, "category": category, "description": description or f"spend {amount}", "user_id": user_id},
                 metadata=metadata,
             )
             await pipeline.run(event)
@@ -283,7 +283,7 @@ async def mobile_finance_action(request: Request, body: dict):
                 event_type=EventType.FINANCE_INCOME_RECORDED,
                 aggregate_id=user_id,
                 aggregate_type=AggregateType.FINANCE,
-                payload={"amount": amount, "source": source, "description": description or f"income {amount}"},
+                payload={"amount": amount, "source": source, "description": description or f"income {amount}", "user_id": user_id},
                 metadata=metadata,
             )
             await pipeline.run(event)

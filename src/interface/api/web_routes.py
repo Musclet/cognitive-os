@@ -662,7 +662,7 @@ async def web_finance_action(request: Request, body: dict):
                 event_type=EventType.FINANCE_TRANSACTION_RECORDED,
                 aggregate_id=user_id,
                 aggregate_type=AggregateType.FINANCE,
-                payload={"amount": amount, "category": category, "description": description or f"消费{amount}"},
+                payload={"amount": amount, "category": category, "description": description or f"消费{amount}", "user_id": user_id},
                 metadata=metadata,
             )
             root_events.append(event)
@@ -678,7 +678,7 @@ async def web_finance_action(request: Request, body: dict):
                 event_type=EventType.FINANCE_INCOME_RECORDED,
                 aggregate_id=user_id,
                 aggregate_type=AggregateType.FINANCE,
-                payload={"amount": amount, "source": source, "description": description or f"收入{amount}"},
+                payload={"amount": amount, "source": source, "description": description or f"收入{amount}", "user_id": user_id},
                 metadata=metadata,
             )
             root_events.append(event)
@@ -3350,9 +3350,27 @@ async def web_actions_recent(request: Request, limit: int = 20):
     """List recent undoable/discoverable Web actions for the current user."""
     _require_session(request)
     user_id = _web_user_id(request)
-    return {
-        "actions": _recent_web_actions_for_user(user_id, limit),
-    }
+
+    # Merge process cache (fast path) with StateEngine durable records
+    seen_ids: set[str] = set()
+    all_actions: list[dict] = []
+
+    for a in _recent_web_actions_for_user(user_id, limit):
+        aid = a.get("action_id", "")
+        if aid not in seen_ids:
+            seen_ids.add(aid)
+            all_actions.append(a)
+
+    engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
+    if engine is not None:
+        for a in engine.get_recent_undo_actions(user_id=user_id, limit=limit, include_reverted=False):
+            aid = a.get("action_id", "")
+            if aid not in seen_ids:
+                seen_ids.add(aid)
+                all_actions.append(a)
+
+    all_actions.sort(key=lambda item: item.get("timestamp", ""), reverse=True)
+    return {"actions": all_actions[: max(1, min(int(limit or 20), 50))]}
 
 
 @router.post("/api/web/actions/undo")
@@ -3369,14 +3387,27 @@ async def web_actions_undo(request: Request, body: dict):
     _require_session(request)
 
     action_id = (body.get("action_id") or "").strip()
-    if not action_id or action_id not in _web_recent_actions:
+    if not action_id:
+        return {
+            "ok": False,
+            "needs_followup": True,
+            "message": "未提供 action_id，无法撤回。",
+        }
+
+    # Lookup: process cache first (fast path), then StateEngine (durable)
+    action = _web_recent_actions.get(action_id)
+    if action is None:
+        engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
+        if engine is not None:
+            action = engine.get_undo_action(action_id)
+    if action is None:
         return {
             "ok": False,
             "needs_followup": True,
             "message": "未找到可撤回的操作，可能已过期。",
+            "action_id": action_id,
         }
 
-    action = _web_recent_actions[action_id]
     user_id = _web_user_id(request)
     if action.get("user_id") and str(action.get("user_id")) != str(user_id):
         return {

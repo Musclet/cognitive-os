@@ -325,6 +325,7 @@ async def handle_finance_command(event: Event) -> list[Event]:
                         "amount": amount,
                         "source": source,
                         "description": raw_text,
+                        "user_id": event.aggregate_id,
                     },
                 )
             ]
@@ -413,6 +414,7 @@ async def handle_finance_command(event: Event) -> list[Event]:
                     "amount": amount,
                     "description": description,
                     "category": category,
+                    "user_id": event.aggregate_id,
                 },
             )
         ]
