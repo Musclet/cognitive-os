@@ -41,6 +41,16 @@ function chaoxingSyncText(status: any): string {
   return `超星作业：${state} · 拉取 ${count} 项${error}`
 }
 
+function jwxtSyncText(status: any): string {
+  const state = STATUS_LABELS[status?.status] || status?.status || '未知'
+  const pulledCount = status?.pulled_count ?? 0
+  const blockCount = status?.temporal_blocks_count ?? 0
+  const error = status?.error_code
+    ? ` · ${status.error_code}${status.error ? `: ${status.error}` : ''}`
+    : ''
+  return `教务课表：${state} · 拉取 ${pulledCount} 条 · 课程 ${blockCount} 条${error}`
+}
+
 export function SystemPage({ onAction }: Props) {
   const [data, setData] = useState<DashboardData | null>(null)
   const [recentActions, setRecentActions] = useState<RecentAction[]>([])
@@ -137,6 +147,8 @@ export function SystemPage({ onAction }: Props) {
       const syncFailed = syncStatus?.status === 'failed' || Boolean(syncStatus?.mock_enabled)
       const statusText = action === 'sync_homework' && syncStatus
         ? chaoxingSyncText(syncStatus)
+        : action === 'sync_schedule' && syncStatus
+          ? jwxtSyncText(syncStatus)
         : `${res.message} · ${res.events} 个事件`
       setSystemStatus({ type: syncFailed || !res.ok ? 'err' : 'ok', text: statusText })
       load()
@@ -356,6 +368,11 @@ export function SystemPage({ onAction }: Props) {
               {(val?.pulled_count != null || val?.homework_count != null) && (
                 <span style={{ marginLeft: 8 }}>
                   拉取 {val.pulled_count ?? val.homework_count ?? 0} 项
+                </span>
+              )}
+              {val?.temporal_blocks_count != null && (
+                <span style={{ marginLeft: 8 }}>
+                  课程 {val.temporal_blocks_count} 条
                 </span>
               )}
             </div>

@@ -34,6 +34,8 @@ export interface DashboardData {
   homework_hidden_count?: number;
   homework_empty_reason?: string;
   today_schedule: any[];
+  schedule_count?: number;
+  schedule_empty_reason?: string;
   calendar_events: any[];
   temporal_blocks: any[];
   vocab_progress: Record<string, any>;
@@ -358,11 +360,14 @@ export interface SystemActionResponse {
   events: number;
   dashboard?: DashboardData;
   sync_status?: {
+    success?: boolean;
     status: string;
     error_code?: string;
     error?: string;
+    message?: string;
     mock_enabled?: boolean;
     pulled_count?: number;
+    temporal_blocks_count?: number;
     homework_count?: number;
     last_sync_at?: string;
   } | null;
@@ -495,8 +500,13 @@ export async function getWebStatus(): Promise<WebStatus> {
 
 export interface SyncCalendarResponse {
   ok: boolean;
+  success?: boolean;
+  error_code?: string;
   message: string;
   count: number;
+  pulled_count?: number;
+  temporal_blocks_count?: number;
+  last_sync_at?: string;
   events: number;
 }
 

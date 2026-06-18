@@ -308,6 +308,14 @@ def _schedule_empty_reason(
     jwxt = sync_health.get("jwxt", {})
     if jwxt.get("status") != "failed":
         return "schedule_empty_no_blocks"
+    error_code = str(jwxt.get("error_code", "")).strip()
+    if error_code.startswith("jwxt_") and error_code not in {
+        "jwxt_network_error",
+        "jwxt_parser_error",
+    }:
+        return "schedule_empty_auth_failed"
+    if error_code:
+        return error_code
     error = str(jwxt.get("error", "")).strip()
     lowered = error.casefold()
     auth_markers = ("auth", "cookie", "credential", "login", "认证", "登录", "凭据")
@@ -501,8 +509,14 @@ def _sync_health(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     "pulled_count",
                     item.get("total_assignments", item.get("count")),
                 ),
+                "temporal_blocks_count": item.get(
+                    "temporal_blocks_count",
+                    item.get("block_count"),
+                ),
                 "homework_count": item.get("homework_count"),
                 "mock_enabled": item.get("mock_enabled", False),
+                "auto_login_attempted": item.get("auto_login_attempted", False),
+                "success": item.get("success"),
                 "duration_ms": item.get("duration_ms"),
             }
 

@@ -502,11 +502,14 @@ class StateEngine:
             "count",
             "raw_count",
             "block_count",
+            "temporal_blocks_count",
             "course_count",
             "total_assignments",
             "pulled_count",
             "homework_count",
             "mock_enabled",
+            "auto_login_attempted",
+            "success",
             "calendar_id",
         ):
             if key in event.payload:
