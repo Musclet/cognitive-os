@@ -331,6 +331,11 @@ class JwxtConnector(Connector):
                     await page.wait_for_load_state("networkidle", timeout=20000)
                 except Exception:
                     pass
+                # Check auth BEFORE navigating to the schedule page so
+                # error text on the login page (e.g. "用户名或密码不正确")
+                # is still visible when _auth_page_error_code reads it.
+                if not await self._is_authenticated(page):
+                    raise JwxtSyncError(await self._auth_page_error_code(page))
                 try:
                     await page.goto(
                         self._absolute_url(SCHEDULE_PATH),
