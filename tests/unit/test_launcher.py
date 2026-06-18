@@ -138,7 +138,7 @@ def test_launcher_module_imports():
 
     import_lines = [l for l in code.splitlines() if l.startswith("import ") or l.startswith("from ")]
     non_stdlib = []
-    stdlib_modules = {"json", "logging", "os", "socket", "subprocess", "sys", "time", "webbrowser", "pathlib", "__future__"}
+    stdlib_modules = {"json", "logging", "os", "socket", "subprocess", "sys", "time", "urllib", "webbrowser", "pathlib", "__future__"}
 
     for line in import_lines:
         module_part = line.split()[1].split(".")[0]
@@ -150,7 +150,133 @@ def test_launcher_module_imports():
     assert len(non_stdlib) == 0, f"Launcher uses non-stdlib imports: {non_stdlib}"
 
 
-# ── Test 9: No test pollution ──────────────────────────────────────────
+# ── Test 9: HTTP readiness — IPv4 success ───────────────────────────────
+
+
+def test_http_ready_ipv4_success():
+    """HTTP readiness returns True when 127.0.0.1 responds."""
+    ns = _get_launcher_ns()
+    _http_ready_fn = ns["_http_ready"]
+
+    import urllib.error
+
+    class _FakeResp:
+        status = 200
+
+    def _fake_urlopen(req, timeout):
+        return _FakeResp()
+
+    with patch("urllib.request.urlopen", _fake_urlopen):
+        ready, url = _http_ready_fn(["http://127.0.0.1:5173/"])
+    assert ready is True
+    assert "127.0.0.1" in url
+
+
+def test_http_ready_ipv6_success():
+    """HTTP readiness returns True when ::1 responds."""
+    ns = _get_launcher_ns()
+    _http_ready_fn = ns["_http_ready"]
+
+    class _FakeResp:
+        status = 200
+
+    def _fake_urlopen(req, timeout):
+        return _FakeResp()
+
+    with patch("urllib.request.urlopen", _fake_urlopen):
+        ready, url = _http_ready_fn(["http://[::1]:5173/"])
+    assert ready is True
+    assert "::1" in url
+
+
+def test_http_ready_ipv4_down_ipv6_up():
+    """HTTP readiness succeeds on ::1 after 127.0.0.1 fails."""
+    ns = _get_launcher_ns()
+    _http_ready_fn = ns["_http_ready"]
+
+    call_count = [0]
+
+    class _FakeResp:
+        status = 200
+
+    def _fake_urlopen(req, timeout):
+        call_count[0] += 1
+        if "127.0.0.1" in req.full_url:
+            raise OSError("Connection refused")
+        return _FakeResp()
+
+    with patch("urllib.request.urlopen", _fake_urlopen):
+        ready, url = _http_ready_fn(["http://127.0.0.1:5173/", "http://[::1]:5173/"])
+    assert ready is True
+    assert call_count[0] == 2  # first fails, second succeeds
+
+
+def test_http_ready_all_fail():
+    """HTTP readiness returns False when all URLs fail."""
+    ns = _get_launcher_ns()
+    _http_ready_fn = ns["_http_ready"]
+
+    def _fake_urlopen(req, timeout):
+        raise OSError("Connection refused")
+
+    with patch("urllib.request.urlopen", _fake_urlopen):
+        ready, url = _http_ready_fn(
+            ["http://127.0.0.1:5173/", "http://localhost:5173/"],
+            timeout=0.1,
+        )
+    assert ready is False
+    assert url == ""
+
+
+# ── Test 10: Vite startup command includes explicit host/port ────────────
+
+
+def test_frontend_start_command_contains_host_and_port():
+    """Frontend npm command includes --host 127.0.0.1 and --port 5173."""
+    with open(LAUNCHER_PATH, encoding="utf-8") as f:
+        code = f.read()
+    assert "--host" in code
+    assert "127.0.0.1" in code
+    assert "--port" in code
+    assert "5173" in code
+
+
+# ── Test 11: Browser URL points to /app/ ─────────────────────────────────
+
+
+def test_browser_url_opens_app_path():
+    """Browser opens http://localhost:5173/app/ not root."""
+    with open(LAUNCHER_PATH, encoding="utf-8") as f:
+        code = f.read()
+    assert "localhost:5173/app/" in code
+
+
+# ── Test 12: Stdlib imports include urllib ───────────────────────────────
+
+
+def test_launcher_module_imports_include_urllib():
+    """The launcher uses urllib for HTTP readiness checks (still stdlib)."""
+    with open(LAUNCHER_PATH, encoding="utf-8") as f:
+        code = f.read()
+
+    import_lines = [l for l in code.splitlines() if l.startswith("import ") or l.startswith("from ")]
+    non_stdlib = []
+    stdlib_modules = {
+        "json", "logging", "os", "socket", "subprocess", "sys",
+        "time", "webbrowser", "pathlib", "__future__", "urllib",
+    }
+
+    for line in import_lines:
+        module_part = line.split()[1].split(".")[0]
+        if module_part not in stdlib_modules:
+            non_stdlib.append(line)
+
+    if non_stdlib:
+        print(f"Non-stdlib imports found: {non_stdlib}")
+    assert len(non_stdlib) == 0, f"Launcher uses non-stdlib imports: {non_stdlib}"
+
+
+# ── Test 13: No test pollution ───────────────────────────────────────────
 
 
 @pytest.mark.asyncio

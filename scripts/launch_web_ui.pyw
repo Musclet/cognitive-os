@@ -16,6 +16,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.request
+import urllib.error
 import webbrowser
 from pathlib import Path
 
@@ -48,15 +50,67 @@ logger = logging.getLogger("launcher")
 
 
 def _port_in_use(port: int) -> bool:
-    """Check if a TCP port is already listening (tries IPv4 and IPv6)."""
-    for family, addr in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+    """Check if a TCP port is already listening (tries IPv4 and IPv6).
+
+    Logs each attempt so the user can see which address succeeded.
+    """
+    for family, addr, label in (
+        (socket.AF_INET, "127.0.0.1", "IPv4"),
+        (socket.AF_INET6, "::1", "IPv6"),
+    ):
         try:
             with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
                 if s.connect_ex((addr, port)) == 0:
+                    logger.info("TCP %s %s:%d — CONNECTED", label, addr, port)
                     return True
-        except OSError:
+                else:
+                    logger.debug("TCP %s %s:%d — refused", label, addr, port)
+        except OSError as exc:
+            logger.debug("TCP %s %s:%d — %s", label, addr, port, exc)
             continue
+    logger.debug("TCP check :%d — no listener on 127.0.0.1 or ::1", port)
     return False
+
+
+_FRONTEND_READY_URLS = [
+    "http://127.0.0.1:5173/",
+    "http://localhost:5173/",
+    "http://[::1]:5173/",
+    "http://127.0.0.1:5173/app/",
+    "http://localhost:5173/app/",
+    "http://[::1]:5173/app/",
+]
+
+
+def _http_ready(urls: list[str] | None = None, timeout: float = 2.0) -> tuple[bool, str]:
+    """Try HTTP GET on each URL; return (True, successful_url) on first response.
+
+    HTTP status codes 200, 301, 302, 404 are treated as "server is up".
+    Connection refused / timeout are treated as "not ready".
+    """
+    candidates = urls if urls is not None else _FRONTEND_READY_URLS
+    last_error = ""
+    for url in candidates:
+        logger.debug("HTTP check: %s", url)
+        try:
+            req = urllib.request.Request(url, method="GET")
+            resp = urllib.request.urlopen(req, timeout=timeout)
+            logger.info("HTTP %d from %s — READY", resp.status, url)
+            return True, url
+        except urllib.error.HTTPError as e:
+            logger.info("HTTP %d from %s — READY (error page is ok)", e.code, url)
+            return True, url
+        except OSError as exc:
+            last_error = f"{url}: {exc}"
+            logger.debug("HTTP %s — %s", url, exc)
+            continue
+        except Exception as exc:
+            last_error = f"{url}: {exc}"
+            logger.debug("HTTP %s — %s", url, exc)
+            continue
+    logger.error("HTTP readiness check failed for all %d URLs: %s", len(candidates), last_error)
+    return False, ""
 
 
 def _check_python() -> str:
@@ -176,28 +230,49 @@ def _start_frontend(npm_exe: str) -> subprocess.Popen | None:
     log_file = LOGS_DIR / "frontend.log"
     # Clear the frontend log for a fresh start
     log_file.write_text("", encoding="utf-8")
-    logger.info("Starting frontend: %s run dev --port 5173", npm_exe)
+    # Force Vite to bind IPv4 (127.0.0.1) to avoid ::1-only mismatch
+    cmd = [npm_exe, "run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"]
+    logger.info("Starting frontend: %s", " ".join(cmd))
     proc = subprocess.Popen(
-        [npm_exe, "run", "dev", "--", "--port", "5173"],
+        cmd,
         cwd=WEB_DIR,
         stdout=open(log_file, "a", encoding="utf-8"),
         stderr=subprocess.STDOUT,
         creationflags=subprocess.CREATE_NO_WINDOW,
         shell=True,
     )
-    logger.info("Frontend started (PID=%d)", proc.pid)
+    logger.info("Frontend started (PID=%d), binding 127.0.0.1:5173", proc.pid)
     return proc
 
 
-def _wait_for_service(name: str, port: int, timeout: int = 60) -> bool:
-    """Wait up to `timeout` seconds for a service to start listening."""
-    logger.info("Waiting for %s on :%d ...", name, port)
+def _wait_for_service(name: str, port: int, timeout: int = 60, http_urls: list[str] | None = None) -> bool:
+    """Wait up to `timeout` seconds for a service to start listening.
+
+    For the frontend, also performs HTTP readiness checks on multiple URLs
+    to confirm the Vite dev server is actually serving content.
+    """
+    logger.info("Waiting for %s on :%d (timeout=%ds) ...", name, port, timeout)
     deadline = time.monotonic() + timeout
+    http_checked = False
     while time.monotonic() < deadline:
-        if _port_in_use(port):
-            logger.info("%s is ready on :%d", name, port)
-            return True
-        time.sleep(1)
+        if not _port_in_use(port):
+            time.sleep(1)
+            continue
+        # Port is open — for frontend, also verify HTTP readiness
+        if http_urls and not http_checked:
+            ready, url = _http_ready(http_urls, timeout=3)
+            if ready:
+                logger.info("%s is ready — HTTP response from %s", name, url)
+                return True
+            else:
+                logger.warning(
+                    "Port :%d is listening but HTTP not ready yet; retrying ...", port
+                )
+                time.sleep(2)
+                http_checked = False
+                continue
+        logger.info("%s is ready on :%d", name, port)
+        return True
     logger.error("%s did not start within %d seconds", name, timeout)
     return False
 
@@ -249,7 +324,7 @@ def main() -> None:
         pids = _read_pids()
         pids["frontend_pid"] = frontend_proc.pid
         _write_pids(pids)
-        if not _wait_for_service("frontend", 5173, timeout=60):
+        if not _wait_for_service("frontend", 5173, timeout=60, http_urls=_FRONTEND_READY_URLS):
             logger.error("Frontend failed to start. Check logs/launcher/frontend.log")
             _show_message_box(
                 "启动失败 - Cognitive OS",
@@ -258,7 +333,7 @@ def main() -> None:
             sys.exit(1)
 
     # 5. Open browser
-    url = "http://localhost:5173/"
+    url = "http://localhost:5173/app/"
     logger.info("Opening browser: %s", url)
     webbrowser.open(url)
 

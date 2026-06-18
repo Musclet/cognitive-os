@@ -41,7 +41,7 @@ powershell -ExecutionPolicy Bypass -File scripts\create_web_ui_shortcut.ps1
 3. 启动后端（`python scripts/run.py`，端口 8081）
 4. 启动前端（`npm run dev`，端口 5173）
 5. 等待服务就绪
-6. 打开浏览器 → `http://localhost:5173/`
+6. 打开浏览器 → `http://localhost:5173/app/`
 
 ### 3. 登录
 
