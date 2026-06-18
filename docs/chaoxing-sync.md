@@ -14,10 +14,28 @@ mock homework is never reported as a successful real-data sync.
 ## Local login state
 
 Real sync requires `data/chaoxing_state.json` (or the path configured by
-`CHAOXING_STATE_FILE`). The repository contains the interactive helper
-`login_and_save_state()` in `src/connector/chaoxing/browser.py`, but currently
-does not provide a standalone login script. Generate or refresh the state from
-a trusted local process before enabling real sync.
+`CHAOXING_STATE_FILE`). Generate or refresh the state with the included
+standalone script:
+
+```bash
+python scripts/refresh_chaoxing_state.py
+```
+
+This opens a visible browser window. Log in to Chaoxing / 超星学习通
+manually, then press Enter in the terminal to save the login state. The
+script accepts optional arguments:
+
+```bash
+python scripts/refresh_chaoxing_state.py --timeout 180          # shorter timeout
+python scripts/refresh_chaoxing_state.py --state-file data/cx.json  # custom path
+```
+
+If Playwright or Chromium is missing:
+
+```bash
+pip install playwright
+python -m playwright install chromium
+```
 
 The state file may contain session material:
 
@@ -25,9 +43,18 @@ The state file may contain session material:
 - keep it under `data/`, which is ignored by Git;
 - do not paste its contents into logs, issues, or pull requests.
 
-If the file is absent, the sync status is `chaoxing_state_file_missing`. If the
-session has expired, the status is `chaoxing_session_expired`; refresh the local
-login state and retry from the Web system page.
+If the state file is absent, sync returns `chaoxing_state_file_missing`.
+If the session has expired, it returns `chaoxing_session_expired`; run the
+refresh script to regenerate the state and retry from the Web system page.
+
+Other error codes:
+
+| Code | Meaning |
+|------|---------|
+| `chaoxing_playwright_missing` | Playwright package not installed |
+| `chaoxing_browser_unavailable` | Chromium browser cannot launch |
+| `chaoxing_auth_failed` | Generic authentication failure |
+| `chaoxing_sync_failed` | Homework fetch failed for other reasons |
 
 The application reports only booleans, counts, timestamps, and structured error
 codes. It does not expose cookie or token values through the Web API.
