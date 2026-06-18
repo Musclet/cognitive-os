@@ -251,3 +251,289 @@ async def test_successful_real_sync_creates_temporal_blocks_for_dashboard(tmp_pa
     assert completed.payload["pulled_count"] == 1
     assert dashboard["schedule_count"] == 1
     assert dashboard["today_schedule"][0]["course"] == "自动同步课程"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Login error classification (static / pure-function tests)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.parametrize(
+    "error_text, expected_code",
+    [
+        ("用户名或密码错误", "jwxt_invalid_credentials"),
+        ("账号或密码错误，请重新输入", "jwxt_invalid_credentials"),
+        ("密码或用户名不正确", "jwxt_invalid_credentials"),
+        ("密码错误", "jwxt_invalid_password"),
+        ("您输入的密码不正确", "jwxt_invalid_password"),
+        ("密码有误，请重试", "jwxt_invalid_password"),
+        ("用户不存在", "jwxt_invalid_username"),
+        ("账号不存在", "jwxt_invalid_username"),
+        ("用户名不存在，请检查", "jwxt_invalid_username"),
+        ("学号不存在或未注册", "jwxt_invalid_username"),
+        ("账号已被锁定", "jwxt_account_locked"),
+        ("您的账户已被禁用", "jwxt_account_locked"),
+        ("账号已被冻结，请联系管理员", "jwxt_account_locked"),
+        ("密码已过期", "jwxt_password_expired"),
+        ("密码已失效，请修改", "jwxt_password_expired"),
+        ("密码到期请更新", "jwxt_password_expired"),
+        ("请输入验证码", "jwxt_auth_requires_user_action"),
+        ("验证码错误", "jwxt_auth_requires_user_action"),
+        ("系统维护中", ""),
+        ("网络异常，请稍后重试", ""),
+        ("", ""),
+    ],
+)
+def test_classify_login_error(error_text, expected_code):
+    assert JwxtConnector._classify_login_error(error_text) == expected_code
+
+
+def test_classify_login_error_precedence_password_over_credentials():
+    """密码错误 should be classified as jwxt_invalid_password,
+    even if it contains 密码 which also appears in 用户名或密码错误."""
+    assert JwxtConnector._classify_login_error("密码错误") == "jwxt_invalid_password"
+
+
+def test_classify_login_error_precedence_username_over_credentials():
+    """用户不存在 should be classified as jwxt_invalid_username,
+    not jwxt_invalid_credentials."""
+    assert JwxtConnector._classify_login_error("用户不存在") == "jwxt_invalid_username"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Full-flow tests — new error codes flow through handle_fetch_request
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_login_failure_with_error_text_classifies_invalid_credentials(tmp_path):
+    """When login page shows '用户名或密码错误', the connector reports
+    jwxt_invalid_credentials."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_invalid_credentials")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_invalid_credentials"
+
+
+@pytest.mark.asyncio
+async def test_login_failure_with_error_text_classifies_invalid_password(tmp_path):
+    """When login page shows '密码错误', the connector reports
+    jwxt_invalid_password."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_invalid_password")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_invalid_password"
+
+
+@pytest.mark.asyncio
+async def test_login_failure_with_error_text_classifies_invalid_username(tmp_path):
+    """When login page shows '用户不存在', the connector reports
+    jwxt_invalid_username."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_invalid_username")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_invalid_username"
+
+
+@pytest.mark.asyncio
+async def test_login_failure_with_error_text_classifies_account_locked(tmp_path):
+    """When login page shows account locked text, the connector reports
+    jwxt_account_locked."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_account_locked")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_account_locked"
+
+
+@pytest.mark.asyncio
+async def test_login_failure_with_error_text_classifies_password_expired(tmp_path):
+    """When login page shows password expired text, the connector reports
+    jwxt_password_expired."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_password_expired")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_password_expired"
+
+
+@pytest.mark.asyncio
+async def test_login_failure_with_error_text_classifies_unknown(tmp_path):
+    """When login page has no recognizable error text, the connector reports
+    jwxt_login_failed_unknown."""
+    settings = _settings(
+        tmp_path,
+        username=SENTINEL_USERNAME,
+        password=SENTINEL_PASSWORD,
+    )
+    _write_cookie_file(settings)
+    connector = JwxtConnector(use_mock=False, settings=settings)
+    connector._fetch_schedule_api_httpx = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_cookie_expired")
+    )
+    connector._refresh_cookies_with_playwright = AsyncMock(
+        side_effect=JwxtSyncError("jwxt_login_failed_unknown")
+    )
+
+    events = await connector.handle_fetch_request(_fetch_event())
+
+    failed = next(
+        event for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "jwxt_login_failed_unknown"
+
+
+@pytest.mark.asyncio
+async def test_new_error_codes_do_not_leak_sentinels(tmp_path, caplog):
+    """All new error codes must not leak username/password/cookie sentinel values
+    in payloads or logs."""
+    caplog.set_level(logging.INFO)
+    new_codes = [
+        "jwxt_invalid_credentials",
+        "jwxt_invalid_username",
+        "jwxt_invalid_password",
+        "jwxt_account_locked",
+        "jwxt_password_expired",
+        "jwxt_login_failed_unknown",
+    ]
+    for code in new_codes:
+        settings = _settings(
+            tmp_path,
+            username=SENTINEL_USERNAME,
+            password=SENTINEL_PASSWORD,
+        )
+        _write_cookie_file(settings)
+        connector = JwxtConnector(use_mock=False, settings=settings)
+        connector._fetch_schedule_api_httpx = AsyncMock(
+            side_effect=JwxtSyncError("jwxt_cookie_expired")
+        )
+        connector._refresh_cookies_with_playwright = AsyncMock(
+            side_effect=JwxtSyncError(code)
+        )
+
+        events = await connector.handle_fetch_request(_fetch_event())
+        failed = next(
+            event for event in events
+            if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+        )
+        rendered = f"{failed.payload} {caplog.text}"
+
+        assert SENTINEL_USERNAME not in rendered
+        assert SENTINEL_PASSWORD not in rendered
+        assert SENTINEL_COOKIE not in rendered
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dashboard empty-reason tests — new error codes map correctly
+# ══════════════════════════════════════════════════════════════════════════════
+
+from src.domain.dashboard.query import build_dashboard
+from src.domain.dashboard.query import _schedule_empty_reason as _reason  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "error_code, expected_reason",
+    [
+        ("jwxt_invalid_credentials", "schedule_empty_auth_failed"),
+        ("jwxt_invalid_username", "schedule_empty_auth_failed"),
+        ("jwxt_invalid_password", "schedule_empty_auth_failed"),
+        ("jwxt_account_locked", "schedule_empty_auth_failed"),
+        ("jwxt_password_expired", "schedule_empty_auth_failed"),
+        ("jwxt_login_failed_unknown", "schedule_empty_auth_failed"),
+        ("jwxt_cookie_expired", "schedule_empty_auth_failed"),
+        ("jwxt_network_error", "jwxt_network_error"),
+        ("jwxt_parser_error", "jwxt_parser_error"),
+    ],
+)
+def test_dashboard_empty_reason_for_jwxt_error_codes(error_code, expected_reason):
+    """New JWXT auth error codes should map to schedule_empty_auth_failed.
+    Network/parser errors should pass through as-is."""
+    schedule: list[dict] = []
+    health = {
+        "jwxt": {"status": "failed", "error_code": error_code},
+    }
+    assert _reason(schedule, health) == expected_reason

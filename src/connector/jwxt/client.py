@@ -46,6 +46,12 @@ JWXT_ERROR_MESSAGES = {
     "jwxt_sso_required": "JWXT login requires SSO or QR-code authentication.",
     "jwxt_network_error": "JWXT network request failed.",
     "jwxt_parser_error": "JWXT schedule response could not be parsed.",
+    "jwxt_invalid_credentials": "JWXT login failed: invalid username or password.",
+    "jwxt_invalid_username": "JWXT login failed: username does not exist.",
+    "jwxt_invalid_password": "JWXT login failed: incorrect password.",
+    "jwxt_account_locked": "JWXT login failed: account is locked or disabled.",
+    "jwxt_password_expired": "JWXT login failed: password has expired.",
+    "jwxt_login_failed_unknown": "JWXT login failed: reason unknown.",
 }
 
 
@@ -434,7 +440,104 @@ class JwxtConnector(Connector):
             if await self._sso_visible(page):
                 return "jwxt_sso_required"
             return "jwxt_auth_requires_user_action"
-        return "jwxt_login_failed"
+        error_text = await self._extract_login_error_text(page)
+        if error_text:
+            classified = self._classify_login_error(error_text)
+            if classified:
+                return classified
+        return "jwxt_login_failed_unknown"
+
+    async def _extract_login_error_text(self, page: Page) -> str:
+        """Safely extract visible error text from the login page after a failed attempt.
+
+        Reads only visible text content from known error-display elements.
+        Does NOT read form field values, hidden inputs, or full HTML.
+        """
+        selectors = (
+            "#tips",
+            "#errorMsg",
+            "#error_msg",
+            ".error_tip",
+            ".errorTip",
+            ".error",
+            ".tip",
+            ".tips",
+            ".alert-error",
+            ".alert_error",
+            ".alert",
+            "#msg",
+            ".msg",
+            ".message",
+            "#message",
+            ".form-error",
+            "#formError",
+            ".login_error",
+            "#loginError",
+        )
+        for selector in selectors:
+            try:
+                el = page.locator(selector).first
+                if await el.is_visible(timeout=500):
+                    text = (await el.text_content() or "").strip()
+                    if text:
+                        return text
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    def _classify_login_error(error_text: str) -> str:
+        """Classify a login-page error message into a specific JWXT error code.
+
+        Returns an empty string if the message cannot be reliably classified.
+        Checks are ordered so that combined patterns (e.g. 用户名或密码)
+        take precedence over single-factor patterns (e.g. 密码错误).
+        """
+        lowered = error_text.casefold()
+
+        if any(
+            marker in lowered
+            for marker in ("用户名或密码", "账号或密码", "密码或用户名", "密码或账号")
+        ):
+            return "jwxt_invalid_credentials"
+
+        if any(
+            marker in lowered
+            for marker in (
+                "用户不存在", "账号不存在", "用户名不存在",
+                "用户名错误", "用户名不正确", "账号错误", "账号不正确",
+                "用户号不存在", "学号不存在", "学号错误", "学号不正确",
+            )
+        ):
+            return "jwxt_invalid_username"
+
+        if any(
+            marker in lowered
+            for marker in ("密码错误", "密码不正确", "密码有误", "密码不对")
+        ):
+            return "jwxt_invalid_password"
+
+        if any(
+            marker in lowered
+            for marker in (
+                "锁定", "禁用", "冻结", "停用", "已锁", "被锁",
+            )
+        ):
+            return "jwxt_account_locked"
+
+        if any(
+            marker in lowered
+            for marker in (
+                "密码过期", "密码已过期", "密码失效", "密码已失效",
+                "修改密码", "密码到期", "密码已到期", "密码超期",
+            )
+        ):
+            return "jwxt_password_expired"
+
+        if any(marker in lowered for marker in ("验证码",)):
+            return "jwxt_auth_requires_user_action"
+
+        return ""
 
     async def _selector_visible(self, page: Page, selector: str) -> bool:
         try:
