@@ -1,16 +1,16 @@
 # Project Status
 
-Last audited: 2026-06-13
-Audit base: `83605e0`
-Working branch: `codex/project-audit-refactor`
+Last audited: 2026-06-18
+Audit base: `5c072af`
+Working branch: `codex/takeover-baseline`
 
 ## Verified Baseline
 
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `916 passed, 134 warnings` |
-| Temporal/replay/stabilization regression | `51 passed` |
+| Python tests | `976 passed, 142 warnings` |
+| Snapshot/replay determinism | PASS |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src`) | PASS |
 | Full Ruff | 228 pre-existing findings at audit start |
@@ -26,6 +26,12 @@ batch.
 
 ## Completed In This Branch
 
+- Fixed Windows shortcut interpreter selection and verified the desktop
+  shortcut starts both backend and Web UI.
+- Made the launcher prefer the real Python installation used by the shortcut.
+- Made the stop script terminate only the recorded launcher process trees.
+- Made snapshot lifecycle events inherit the triggering event timestamp and
+  causation ID, restoring snapshot/replay hash determinism.
 - Isolated JWXT transport selection behind a mockable method.
 - Made Unicode test fixtures explicitly UTF-8 on Windows.
 - Removed a wall-clock-expired Telegram test date.
@@ -57,16 +63,14 @@ batch.
 
 ## Priority Risk Queue
 
-### P0 Contained
+### P0
 
-- Calendar schedule mirroring can insert, patch, and delete events without a
-  server-side accepted proposal. The Render write gate is disabled. Do not
-  re-enable it until the executor contract is fixed and covered by tests.
+- No active P0 issue is known. Calendar schedule writes are gated behind
+  accepted proposals and remain covered by regression tests.
 
 ### P1 Next
 
-1. Approval and recent-action undo state is partly held in interface-process
-   memory.
+1. Recent-action undo state is partly held in interface-process memory.
 2. The Web route module still contains unreachable legacy dashboard, finance,
    and conflict implementations after the active paths moved to domain
    services.
@@ -84,7 +88,6 @@ batch.
 
 ## Next Safe Batch
 
-Persist proposal approval and recent-action undo state in the event-sourced
-model. Keep the existing API behavior stable, add restart/replay tests first,
-then remove the process-memory stores and the unreachable legacy Web route
-implementations in a separate cleanup commit.
+Rebase PR #5 onto the current master and finish persisting recent-action undo
+state in the event-sourced model. Keep existing API behavior stable and verify
+restart/replay behavior before merging.

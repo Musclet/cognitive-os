@@ -300,16 +300,24 @@ async def test_snapshot_event_does_not_recursively_snapshot():
             for event_type in EventType:
                 bus.subscribe(event_type, engine.apply)
 
-            events = await Pipeline(bus, max_depth=5).run(Event(
+            initial_event = Event(
                 EventType.HOMEWORK_NEW,
                 "snapshot-recursion",
                 AggregateType.HOMEWORK,
                 payload={"title": "单次快照", "course": "测试"},
-            ))
+            )
+            events = await Pipeline(bus, max_depth=5).run(initial_event)
 
             assert [event.event_type for event in events].count(
                 EventType.SYSTEM_SNAPSHOT_CREATED
             ) == 1
+            snapshot_event = next(
+                event
+                for event in events
+                if event.event_type == EventType.SYSTEM_SNAPSHOT_CREATED
+            )
+            assert snapshot_event.timestamp == initial_event.timestamp
+            assert snapshot_event.causation_id == initial_event.event_id
             assert len(await snapshot_store.get_all()) == 1
         finally:
             await close_db()

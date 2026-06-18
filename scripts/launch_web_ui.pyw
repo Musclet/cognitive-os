@@ -115,6 +115,12 @@ def _http_ready(urls: list[str] | None = None, timeout: float = 2.0) -> tuple[bo
 
 def _check_python() -> str:
     """Return the python executable path or raise."""
+    current_executable = Path(sys.executable)
+    if current_executable.name.lower() == "pythonw.exe":
+        console_executable = current_executable.with_name("python.exe")
+        if console_executable.is_file():
+            return str(console_executable)
+
     for name in ("python", "python3"):
         exe = shutil_which(name)
         if exe:
