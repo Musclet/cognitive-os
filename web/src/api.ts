@@ -32,6 +32,7 @@ export interface DashboardData {
   homework: any[];
   homework_count: number;
   homework_hidden_count?: number;
+  homework_empty_reason?: string;
   today_schedule: any[];
   calendar_events: any[];
   temporal_blocks: any[];
@@ -356,6 +357,15 @@ export interface SystemActionResponse {
   action: SystemAction;
   events: number;
   dashboard?: DashboardData;
+  sync_status?: {
+    status: string;
+    error_code?: string;
+    error?: string;
+    mock_enabled?: boolean;
+    pulled_count?: number;
+    homework_count?: number;
+    last_sync_at?: string;
+  } | null;
 }
 
 export interface WebStatus {
@@ -366,6 +376,8 @@ export interface WebStatus {
   bus_subscribers: Record<string, number>;
   settings: {
     chaoxing_mock: boolean;
+    chaoxing_state_file_configured: boolean;
+    chaoxing_state_file_exists: boolean;
     jwxt_mock: boolean;
     google_calendar_mock: boolean;
     momo_sync_enabled: boolean;
@@ -382,6 +394,10 @@ export interface WebStatus {
     last_sync?: string;
     count?: number;
     error?: string;
+    error_code?: string;
+    mock_enabled?: boolean;
+    pulled_count?: number;
+    homework_count?: number;
   }>;
 }
 

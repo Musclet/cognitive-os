@@ -170,6 +170,16 @@ def build_dashboard(
     art = _art_summary(state, today)
     fitness = _fitness_summary(settings, today)
     sync_health = _sync_health(state)
+    chaoxing_health = sync_health["chaoxing"]
+    configured_mock = bool(getattr(settings, "chaoxing_mock", True))
+    chaoxing_health.setdefault("mock_enabled", configured_mock)
+    if configured_mock and chaoxing_health.get("status") == "unknown":
+        chaoxing_health["status"] = "mock"
+    homework_empty_reason = _homework_empty_reason(
+        homework,
+        hidden_count,
+        chaoxing_health,
+    )
     schedule_empty_reason = _schedule_empty_reason(today_schedule, sync_health)
     consistency = _mapping(state, "calendar_consistency")
 
@@ -182,6 +192,7 @@ def build_dashboard(
         "homework": homework,
         "homework_count": len(homework),
         "homework_hidden_count": hidden_count,
+        "homework_empty_reason": homework_empty_reason,
         "today_schedule": today_schedule,
         "schedule_count": len(today_schedule),
         "schedule_empty_reason": schedule_empty_reason,
@@ -303,6 +314,28 @@ def _schedule_empty_reason(
     if any(marker in lowered for marker in auth_markers):
         return "schedule_empty_auth_failed"
     return error or "schedule_empty_no_blocks"
+
+
+def _homework_empty_reason(
+    homework: list[dict[str, Any]],
+    hidden_count: int,
+    chaoxing_health: dict[str, Any],
+) -> str:
+    if homework:
+        return ""
+    if chaoxing_health.get("mock_enabled"):
+        return (
+            "homework_empty_mock_filtered"
+            if hidden_count > 0
+            else "homework_empty_mock_enabled"
+        )
+    if chaoxing_health.get("status") == "failed":
+        return str(
+            chaoxing_health.get("error_code")
+            or chaoxing_health.get("error")
+            or "chaoxing_auth_failed"
+        )
+    return "homework_empty_no_items"
 
 
 def _latest_task_feedback(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -459,10 +492,17 @@ def _sync_health(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     ),
                 ),
                 "error": item.get("error", ""),
+                "error_code": item.get("error_code", ""),
                 "count": item.get(
                     "count",
                     item.get("block_count", item.get("total_assignments")),
                 ),
+                "pulled_count": item.get(
+                    "pulled_count",
+                    item.get("total_assignments", item.get("count")),
+                ),
+                "homework_count": item.get("homework_count"),
+                "mock_enabled": item.get("mock_enabled", False),
                 "duration_ms": item.get("duration_ms"),
             }
 

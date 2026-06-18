@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, ".")
 
-from src.core.events import EventType
+from src.core.events import AggregateType, Event, EventType
 from src.interface.api.web_routes import router as web_router, COOKIE_NAME, _make_session_cookie, _validate_session
 
 
@@ -172,6 +172,7 @@ class TestDashboard:
         assert "active_context" in data
         assert "homework" in data
         assert "homework_count" in data
+        assert "homework_empty_reason" in data
         assert "today_schedule" in data
         assert "calendar_events" in data
         assert "temporal_blocks" in data
@@ -198,6 +199,67 @@ class TestDashboard:
         assert sync["jwxt"]["count"] == 8
         assert sync["chaoxing"]["status"] == "failed"
         assert sync["chaoxing"]["error"] == "auth failed"
+
+    def test_dashboard_mock_filtered_homework_has_explicit_empty_reason(
+        self,
+        client: TestClient,
+        app: FastAPI,
+    ):
+        app.state.state_engine._state = {
+            "homework": {
+                "mock-1": {
+                    "title": "第三章习题",
+                    "course": "高等数学",
+                    "status": "pending",
+                }
+            },
+            "sync": {
+                "chaoxing": {
+                    "status": "completed",
+                    "mock_enabled": True,
+                    "pulled_count": 1,
+                    "homework_count": 1,
+                }
+            },
+        }
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["homework"] == []
+        assert data["homework_hidden_count"] == 1
+        assert data["homework_empty_reason"] == "homework_empty_mock_filtered"
+        assert data["sync_health"]["chaoxing"]["mock_enabled"] is True
+
+    def test_dashboard_real_chaoxing_homework_is_visible(self, client: TestClient, app: FastAPI):
+        app.state.state_engine._state = {
+            "homework": {
+                "real-1": {
+                    "title": "实验报告",
+                    "course": "虚拟现实技术",
+                    "status": "pending",
+                }
+            },
+            "sync": {
+                "chaoxing": {
+                    "status": "completed",
+                    "mock_enabled": False,
+                    "pulled_count": 1,
+                    "homework_count": 1,
+                }
+            },
+        }
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["homework_count"] == 1
+        assert data["homework"][0]["title"] == "实验报告"
+        assert data["homework_empty_reason"] == ""
 
     def test_dashboard_sync_health_falls_back_to_calendar_and_vocab_state(self, client: TestClient, app: FastAPI):
         app.state.state_engine._state = {
@@ -2884,6 +2946,37 @@ class TestSystemAction:
         assert event.event_type == EventType.SYSTEM_SCHEDULED_TRIGGER
         assert event.payload["action"] == "schedule_daily_sync"
         assert event.payload["source"] == "web_ui_system"
+
+    def test_sync_homework_returns_structured_failure(self, client: TestClient, app: FastAPI):
+        failed = Event(
+            event_type=EventType.CONNECTOR_FETCH_FAILED,
+            aggregate_id="web_check_homework",
+            aggregate_type=AggregateType.HOMEWORK,
+            payload={
+                "source": "chaoxing",
+                "error_code": "chaoxing_state_file_missing",
+                "error": "Chaoxing login state is not configured.",
+                "mock_enabled": False,
+                "pulled_count": 0,
+                "homework_count": 0,
+            },
+        )
+        app.state.pipeline.run = AsyncMock(return_value=[failed])
+        cookie = self._login(client)
+
+        resp = client.post(
+            "/api/web/system/action",
+            json={"action": "sync_homework"},
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["sync_status"]["status"] == "failed"
+        assert data["sync_status"]["error_code"] == "chaoxing_state_file_missing"
+        assert data["sync_status"]["pulled_count"] == 0
+        assert data["sync_status"]["homework_count"] == 0
 
     def test_sync_all_publishes_all_refresh_triggers(self, client: TestClient, app: FastAPI):
         app.state.pipeline.run.reset_mock()

@@ -63,10 +63,13 @@ async def test_connector_fetch_request_handler():
         payload={"source": "chaoxing", "query": "homework_list"},
     )
     result2 = await connector.handle_fetch_request(event2)
-    assert len(result2) == 1
-    assert result2[0].event_type == EventType.CONNECTOR_FETCH_COMPLETED
-    assert result2[0].causation_id == event2.event_id
-    assert len(result2[0].payload["homeworks"]) == 2
+    assert [event.event_type for event in result2] == [
+        EventType.CONNECTOR_FETCH_STARTED,
+        EventType.CONNECTOR_FETCH_COMPLETED,
+    ]
+    assert result2[1].causation_id == event2.event_id
+    assert len(result2[1].payload["homeworks"]) == 2
+    assert result2[1].payload["mock_enabled"] is True
     print("✓ handle_fetch_request: request → completed with causation")
 
 
@@ -80,10 +83,12 @@ async def test_connector_fetch_failed_on_error():
         payload={"source": "chaoxing", "query": "invalid_query"},
     )
     result = await connector.handle_fetch_request(event)
-    assert len(result) == 1
-    # Mock returns data even for unknown query (with error field)
-    assert result[0].event_type == EventType.CONNECTOR_FETCH_COMPLETED
-    print("✓ unknown query still returns data (with error field)")
+    assert [item.event_type for item in result] == [
+        EventType.CONNECTOR_FETCH_STARTED,
+        EventType.CONNECTOR_FETCH_FAILED,
+    ]
+    assert result[1].payload["error_code"] == "chaoxing_sync_failed"
+    print("✓ unknown query returns a structured failure")
 
 
 async def test_browser_params_extraction():

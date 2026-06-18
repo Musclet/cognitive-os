@@ -486,13 +486,29 @@ class StateEngine:
             view["last_sync_started"] = event.timestamp.isoformat()
         elif status == "completed":
             view["last_sync"] = event.timestamp.isoformat()
+            view["last_sync_at"] = event.timestamp.isoformat()
             view["last_sync_completed"] = event.timestamp.isoformat()
             view["error"] = ""
+            view["error_code"] = ""
         elif status == "failed":
             view["last_sync_failed"] = event.timestamp.isoformat()
             view["error"] = event.payload.get("error", event.metadata.get("error_code", ""))
+            view["error_code"] = event.payload.get(
+                "error_code",
+                event.metadata.get("error_code", ""),
+            )
 
-        for key in ("count", "raw_count", "block_count", "course_count", "total_assignments", "calendar_id"):
+        for key in (
+            "count",
+            "raw_count",
+            "block_count",
+            "course_count",
+            "total_assignments",
+            "pulled_count",
+            "homework_count",
+            "mock_enabled",
+            "calendar_id",
+        ):
             if key in event.payload:
                 view[key] = event.payload.get(key)
         if "duration_ms" in event.metadata:

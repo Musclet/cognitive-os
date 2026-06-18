@@ -8,9 +8,17 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    async_playwright = None
+
+if TYPE_CHECKING:
+    from playwright.async_api import Browser, BrowserContext, Page
+else:
+    Browser = BrowserContext = Page = Any
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +51,8 @@ class ChaoxingBrowser:
         """Launch browser and create context with stored auth state.
         Idempotent: skips if already running.
         """
+        if async_playwright is None:
+            raise ModuleNotFoundError("Playwright is not installed")
         if self._browser and self._context:
             logger.info("[BROWSER] already running, skipping start")
             return self._context
@@ -71,14 +81,17 @@ class ChaoxingBrowser:
             if self._browser:
                 await self._browser.close()
                 logger.info("[BROWSER] closed")
-        except Exception as e:
-            logger.warning("[BROWSER] close error: %s", e)
+        except Exception as exc:
+            logger.warning("[BROWSER] close error_type=%s", type(exc).__name__)
         try:
             if self._playwright:
                 await self._playwright.stop()
                 logger.info("[BROWSER] playwright stopped")
-        except Exception as e:
-            logger.warning("[BROWSER] playwright stop error: %s", e)
+        except Exception as exc:
+            logger.warning(
+                "[BROWSER] playwright stop error_type=%s",
+                type(exc).__name__,
+            )
         self._context = None
         self._browser = None
         self._playwright = None
@@ -91,8 +104,11 @@ class ChaoxingBrowser:
             await self._context.storage_state(path=str(self._state_path))
             logger.debug("[BROWSER] state saved to %s", self._state_path)
             return True
-        except Exception as e:
-            logger.warning("[BROWSER] save state failed: %s", e)
+        except Exception as exc:
+            logger.warning(
+                "[BROWSER] save state failed error_type=%s",
+                type(exc).__name__,
+            )
             return False
 
     async def keepalive(self) -> bool:
@@ -108,8 +124,11 @@ class ChaoxingBrowser:
                 return False
             logger.debug("[SESSION] keepalive ok")
             return True
-        except Exception as e:
-            logger.warning("[SESSION] keepalive error: %s", e)
+        except Exception as exc:
+            logger.warning(
+                "[SESSION] keepalive error_type=%s",
+                type(exc).__name__,
+            )
             return False
         finally:
             if page:
@@ -162,8 +181,11 @@ class ChaoxingBrowser:
                     pass
             logger.warning("[SESSION] no login indicators found — may be expired")
             return False
-        except Exception as e:
-            logger.warning("[SESSION] check failed: %s", e)
+        except Exception as exc:
+            logger.warning(
+                "[SESSION] check failed error_type=%s",
+                type(exc).__name__,
+            )
             return False
         finally:
             if page:
@@ -183,6 +205,9 @@ async def login_and_save_state(
     Returns True if login was successful.
     """
     import asyncio
+
+    if async_playwright is None:
+        raise ModuleNotFoundError("Playwright is not installed")
 
     state_path = Path(state_file)
     if state_path.exists():

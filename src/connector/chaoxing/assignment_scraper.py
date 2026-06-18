@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs
 
-from playwright.async_api import Page
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+else:
+    Page = Any
 
 from src.connector.chaoxing.browser import ChaoxingBrowser
 from src.domain.course_topology import infer_teacher, normalize_course_name
@@ -128,8 +132,12 @@ async def fetch_course_assignments(
     
     try:
         page = await browser.new_page()
-    except Exception as e:
-        logger.error("[PAGE] new_page failed for '%s': %s", course_name[:30], e)
+    except Exception as exc:
+        logger.error(
+            "[PAGE] new_page failed for '%s' error_type=%s",
+            course_name[:30],
+            type(exc).__name__,
+        )
         return assignments
 
     try:
@@ -191,8 +199,12 @@ async def fetch_course_assignments(
         summary = f"{len(assignments)} items" if assignments else "0 items"
         logger.info("[%s]: %s", course_name[:20], summary)
 
-    except Exception as e:
-        logger.error("[COURSE] failed '%s': %s", course_name[:30], e)
+    except Exception as exc:
+        logger.error(
+            "[COURSE] failed '%s' error_type=%s",
+            course_name[:30],
+            type(exc).__name__,
+        )
     finally:
         try:
             await page.close()
@@ -286,11 +298,17 @@ async def fetch_all_assignments(
                 logger.info("[ASSIGNMENT] progress: %d/%d courses, %d items", i+1, total, len(all_assignments))
                 if on_progress:
                     await on_progress(i + 1, total, len(all_assignments))
-        except Exception as e:
-            logger.error("[ASSIGNMENT] course %d/%d failed '%s': %s", i+1, total, course.get("name", "?")[:30], e)
+        except Exception as exc:
+            logger.error(
+                "[ASSIGNMENT] course %d/%d failed '%s' error_type=%s",
+                i + 1,
+                total,
+                course.get("name", "?")[:30],
+                type(exc).__name__,
+            )
             all_assignments.append({
                 "course": course.get("name", "?"),
-                "error": str(e),
+                "error": type(exc).__name__,
                 "title": "",
                 "detail_url": "",
                 "deadline": "",

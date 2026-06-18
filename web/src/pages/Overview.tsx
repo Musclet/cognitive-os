@@ -9,6 +9,20 @@ import { announceWebAction, refreshDashboard } from '../events'
 
 interface Props { onAction?: (text: string, action?: string) => void }
 
+function homeworkEmptyText(reason?: string): string {
+  const messages: Record<string, string> = {
+    homework_empty_mock_filtered: '作业为空：当前为 mock 模式且示例课程被过滤',
+    homework_empty_mock_enabled: '作业为空：当前为 mock 模式',
+    chaoxing_state_file_missing: '作业为空：超星未配置真实登录状态',
+    chaoxing_auth_missing: '作业为空：超星未配置真实登录状态',
+    chaoxing_session_expired: '作业同步失败：超星登录状态失效',
+    chaoxing_auth_failed: '作业同步失败：超星认证失败',
+    chaoxing_playwright_missing: '作业同步失败：Playwright 不可用',
+    chaoxing_browser_unavailable: '作业同步失败：浏览器不可用',
+  }
+  return messages[reason || ''] || '暂无作业'
+}
+
 export function Overview({ onAction: _onAction }: Props) {
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -403,7 +417,9 @@ export function Overview({ onAction: _onAction }: Props) {
               )}
               </div>
           ) : (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>暂无作业</div>
+            <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
+              {homeworkEmptyText(data.homework_empty_reason)}
+            </div>
           )}
         </div>
 

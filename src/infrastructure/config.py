@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     chaoxing_username: str = ""
     chaoxing_password: str = ""
     chaoxing_mock: bool = True
+    chaoxing_state_file: str = "data/chaoxing_state.json"
 
     jwxt_username: str = ""
     jwxt_password: str = ""

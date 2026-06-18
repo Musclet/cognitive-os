@@ -18,6 +18,20 @@ const STATUS_LABELS: Record<string, string> = {
   delayed: '稍后',
 }
 
+function homeworkEmptyText(reason?: string): string {
+  const messages: Record<string, string> = {
+    homework_empty_mock_filtered: '作业为空：当前为 mock 模式且示例课程被过滤',
+    homework_empty_mock_enabled: '作业为空：当前为 mock 模式',
+    chaoxing_state_file_missing: '作业为空：超星未配置真实登录状态',
+    chaoxing_auth_missing: '作业为空：超星未配置真实登录状态',
+    chaoxing_session_expired: '作业同步失败：超星登录状态失效',
+    chaoxing_auth_failed: '作业同步失败：超星认证失败',
+    chaoxing_playwright_missing: '作业同步失败：Playwright 不可用',
+    chaoxing_browser_unavailable: '作业同步失败：浏览器不可用',
+  }
+  return messages[reason || ''] || '暂无作业'
+}
+
 export function Tasks({ onAction }: Props) {
   const [data, setData] = useState<DashboardData | null>(null)
   const [completionText, setCompletionText] = useState('')
@@ -328,7 +342,9 @@ export function Tasks({ onAction }: Props) {
           {hiddenCount > 0 ? ` · 已处理隐藏 ${hiddenCount} 项` : ''}
         </div>
         {homework.length === 0 && (
-          <div className="card" style={{ color: 'var(--text-dim)', fontSize: 13 }}>暂无作业</div>
+          <div className="card" style={{ color: 'var(--text-dim)', fontSize: 13 }}>
+            {homeworkEmptyText(data.homework_empty_reason)}
+          </div>
         )}
         {homework.map((hw: any, i: number) => {
           const hwId = String(hw.id || hw.title || i)

@@ -16,6 +16,7 @@ class DashboardResponse(BaseModel):
     homework: list[dict[str, Any]] = Field(default_factory=list)
     homework_count: int = 0
     homework_hidden_count: int = 0
+    homework_empty_reason: str = ""
     today_schedule: list[dict[str, Any]] = Field(default_factory=list)
     schedule_count: int = 0
     schedule_empty_reason: str = ""
