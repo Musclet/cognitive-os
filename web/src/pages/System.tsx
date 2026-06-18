@@ -443,6 +443,12 @@ export function SystemPage({ onAction }: Props) {
                   : webStatus.settings.chaoxing_state_file_exists ? '已就绪' : '文件缺失'}
               </span>
             </div>
+            {webStatus.settings.chaoxing_state_file_configured &&
+             !webStatus.settings.chaoxing_state_file_exists && (
+              <div style={{ marginTop: 4, fontSize: 12, color: 'var(--warning)' }}>
+                运行 python scripts/refresh_chaoxing_state.py 生成登录状态，然后再点击同步作业
+              </div>
+            )}
             <div className="stat-row">
               <span className="label">教务 Mock</span>
               <span className="value">{webStatus.settings.jwxt_mock ? '是' : '否'}</span>
