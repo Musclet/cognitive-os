@@ -1,15 +1,15 @@
 # Project Status
 
 Last audited: 2026-06-18
-Audit base: `5c072af`
-Working branch: `codex/takeover-baseline`
+Audit base: `fd9c5b2`
+Working branch: `master`
 
 ## Verified Baseline
 
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `976 passed, 142 warnings` |
+| Python tests | `990 passed, 145 warnings` |
 | Snapshot/replay determinism | PASS |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src`) | PASS |
@@ -32,6 +32,8 @@ batch.
 - Made the stop script terminate only the recorded launcher process trees.
 - Made snapshot lifecycle events inherit the triggering event timestamp and
   causation ID, restoring snapshot/replay hash determinism.
+- Persisted recent finance undo metadata through StateEngine replay so undo
+  remains available after process restarts.
 - Isolated JWXT transport selection behind a mockable method.
 - Made Unicode test fixtures explicitly UTF-8 on Windows.
 - Removed a wall-clock-expired Telegram test date.
@@ -70,11 +72,10 @@ batch.
 
 ### P1 Next
 
-1. Recent-action undo state is partly held in interface-process memory.
-2. The Web route module still contains unreachable legacy dashboard, finance,
+1. The Web route module still contains unreachable legacy dashboard, finance,
    and conflict implementations after the active paths moved to domain
    services.
-3. Some API routes still return untyped dictionaries.
+2. Some API routes still return untyped dictionaries.
 
 ### P2 Planned
 
@@ -88,6 +89,6 @@ batch.
 
 ## Next Safe Batch
 
-Rebase PR #5 onto the current master and finish persisting recent-action undo
-state in the event-sourced model. Keep existing API behavior stable and verify
-restart/replay behavior before merging.
+Remove the unreachable legacy dashboard, finance, and conflict implementations
+from `web_routes.py` as a behavior-neutral cleanup. Keep the active domain
+service paths unchanged and run the full Web/API regression suite.
