@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, ".")
 
-from src.core.events import EventType
+from src.core.events import AggregateType, Event, EventType
 from src.interface.api.web_routes import router as web_router, COOKIE_NAME, _make_session_cookie, _validate_session
 
 
@@ -172,6 +172,7 @@ class TestDashboard:
         assert "active_context" in data
         assert "homework" in data
         assert "homework_count" in data
+        assert "homework_empty_reason" in data
         assert "today_schedule" in data
         assert "calendar_events" in data
         assert "temporal_blocks" in data
@@ -198,6 +199,67 @@ class TestDashboard:
         assert sync["jwxt"]["count"] == 8
         assert sync["chaoxing"]["status"] == "failed"
         assert sync["chaoxing"]["error"] == "auth failed"
+
+    def test_dashboard_mock_filtered_homework_has_explicit_empty_reason(
+        self,
+        client: TestClient,
+        app: FastAPI,
+    ):
+        app.state.state_engine._state = {
+            "homework": {
+                "mock-1": {
+                    "title": "第三章习题",
+                    "course": "高等数学",
+                    "status": "pending",
+                }
+            },
+            "sync": {
+                "chaoxing": {
+                    "status": "completed",
+                    "mock_enabled": True,
+                    "pulled_count": 1,
+                    "homework_count": 1,
+                }
+            },
+        }
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["homework"] == []
+        assert data["homework_hidden_count"] == 1
+        assert data["homework_empty_reason"] == "homework_empty_mock_filtered"
+        assert data["sync_health"]["chaoxing"]["mock_enabled"] is True
+
+    def test_dashboard_real_chaoxing_homework_is_visible(self, client: TestClient, app: FastAPI):
+        app.state.state_engine._state = {
+            "homework": {
+                "real-1": {
+                    "title": "实验报告",
+                    "course": "虚拟现实技术",
+                    "status": "pending",
+                }
+            },
+            "sync": {
+                "chaoxing": {
+                    "status": "completed",
+                    "mock_enabled": False,
+                    "pulled_count": 1,
+                    "homework_count": 1,
+                }
+            },
+        }
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["homework_count"] == 1
+        assert data["homework"][0]["title"] == "实验报告"
+        assert data["homework_empty_reason"] == ""
 
     def test_dashboard_sync_health_falls_back_to_calendar_and_vocab_state(self, client: TestClient, app: FastAPI):
         app.state.state_engine._state = {
@@ -345,6 +407,147 @@ class TestDashboard:
         data = resp.json()
         assert len(data["today_schedule"]) == 1
         assert data["today_schedule"][0]["course"] == "数学"
+        assert data["schedule_count"] == 1
+        assert data["schedule_empty_reason"] == ""
+
+    def test_dashboard_projects_today_jwxt_temporal_block(self, client: TestClient, app: FastAPI):
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        start = datetime.now(local_tz).replace(hour=10, minute=10, second=0, microsecond=0)
+        block = TimeBlock(
+            block_id="jwxt-today",
+            source=TemporalSource.JWXT,
+            block_type=TimeBlockType.CLASS_LECTURE,
+            start=start,
+            end=start + timedelta(minutes=90),
+            title="计算机图形学",
+            location="实验楼 C-101",
+            description="张老师",
+            metadata={"teacher": "张老师"},
+        )
+        app.state.state_engine.get_temporal_blocks.return_value = [block]
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schedule_count"] == 1
+        assert data["schedule_empty_reason"] == ""
+        assert data["today_schedule"] == [{
+            "course": "计算机图形学",
+            "start": "10:10",
+            "end": "11:40",
+            "location": "实验楼 C-101",
+            "teacher": "张老师",
+            "source": "jwxt",
+        }]
+
+    def test_dashboard_ignores_non_today_and_non_course_temporal_blocks(
+        self,
+        client: TestClient,
+        app: FastAPI,
+    ):
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        today = datetime.now(local_tz).replace(hour=8, minute=20, second=0, microsecond=0)
+        app.state.state_engine.get_temporal_blocks.return_value = [
+            TimeBlock(
+                block_id="jwxt-tomorrow",
+                source=TemporalSource.JWXT,
+                block_type=TimeBlockType.CLASS_LAB,
+                start=today + timedelta(days=1),
+                end=today + timedelta(days=1, minutes=90),
+                title="明日实验",
+            ),
+            TimeBlock(
+                block_id="workout-today",
+                source=TemporalSource.SYSTEM,
+                block_type=TimeBlockType.WORKOUT_BLOCK,
+                start=today,
+                end=today + timedelta(hours=1),
+                title="力量训练",
+            ),
+            TimeBlock(
+                block_id="jwxt-reminder",
+                source=TemporalSource.JWXT,
+                block_type=TimeBlockType.REMINDER,
+                start=today,
+                end=today + timedelta(minutes=10),
+                title="教务提醒",
+            ),
+        ]
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["today_schedule"] == []
+        assert data["schedule_count"] == 0
+        assert data["schedule_empty_reason"] == "schedule_empty_no_blocks"
+
+    def test_dashboard_deduplicates_schedule_and_temporal_block(self, client: TestClient, app: FastAPI):
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        start = datetime.now(local_tz).replace(hour=8, minute=20, second=0, microsecond=0)
+        app.state.state_engine._state = {
+            "schedule": {
+                start.date().isoformat(): [{
+                    "course": "影视特效技术",
+                    "start": start.isoformat(),
+                    "end": (start + timedelta(minutes=90)).isoformat(),
+                    "location": "教学楼 A-301",
+                }]
+            }
+        }
+        app.state.state_engine.get_temporal_blocks.return_value = [
+            TimeBlock(
+                block_id="jwxt-duplicate",
+                source=TemporalSource.JWXT,
+                block_type=TimeBlockType.CLASS_LECTURE,
+                start=start,
+                end=start + timedelta(minutes=90),
+                title="影视特效技术",
+                location="教学楼 A-301",
+            )
+        ]
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schedule_count"] == 1
+        assert len(data["today_schedule"]) == 1
+
+    def test_dashboard_schedule_empty_reason_uses_jwxt_auth_failure(
+        self,
+        client: TestClient,
+        app: FastAPI,
+    ):
+        app.state.state_engine._state = {
+            "sync": {
+                "jwxt": {
+                    "status": "failed",
+                    "error": "教务登录失败：cookie 失效",
+                }
+            }
+        }
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schedule_count"] == 0
+        assert data["schedule_empty_reason"] == "schedule_empty_auth_failed"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2743,6 +2946,37 @@ class TestSystemAction:
         assert event.event_type == EventType.SYSTEM_SCHEDULED_TRIGGER
         assert event.payload["action"] == "schedule_daily_sync"
         assert event.payload["source"] == "web_ui_system"
+
+    def test_sync_homework_returns_structured_failure(self, client: TestClient, app: FastAPI):
+        failed = Event(
+            event_type=EventType.CONNECTOR_FETCH_FAILED,
+            aggregate_id="web_check_homework",
+            aggregate_type=AggregateType.HOMEWORK,
+            payload={
+                "source": "chaoxing",
+                "error_code": "chaoxing_state_file_missing",
+                "error": "Chaoxing login state is not configured.",
+                "mock_enabled": False,
+                "pulled_count": 0,
+                "homework_count": 0,
+            },
+        )
+        app.state.pipeline.run = AsyncMock(return_value=[failed])
+        cookie = self._login(client)
+
+        resp = client.post(
+            "/api/web/system/action",
+            json={"action": "sync_homework"},
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["sync_status"]["status"] == "failed"
+        assert data["sync_status"]["error_code"] == "chaoxing_state_file_missing"
+        assert data["sync_status"]["pulled_count"] == 0
+        assert data["sync_status"]["homework_count"] == 0
 
     def test_sync_all_publishes_all_refresh_triggers(self, client: TestClient, app: FastAPI):
         app.state.pipeline.run.reset_mock()

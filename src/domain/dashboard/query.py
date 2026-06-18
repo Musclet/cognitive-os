@@ -12,6 +12,7 @@ from src.domain.homework.status import is_open_homework_status
 
 logger = logging.getLogger(__name__)
 LOCAL_TZ = timezone(timedelta(hours=8))
+COURSE_BLOCK_TYPES = {"class_lecture", "class_lab", "course", "schedule", "schedule_item"}
 
 
 def build_dashboard(
@@ -76,17 +77,19 @@ def build_dashboard(
     homework.sort(key=lambda item: item.get("deadline") or "9999-12-31")
 
     today_schedule: list[dict[str, Any]] = []
+    schedule_keys: set[tuple[str, str, str]] = set()
     schedule = _mapping(state, "schedule").get(today.isoformat(), [])
     if isinstance(schedule, list):
         for item in schedule:
             if isinstance(item, dict):
-                today_schedule.append({
+                schedule_item = {
                     "course": item.get("course", item.get("name", "")),
                     "start": item.get("start", item.get("start_time", "")),
                     "end": item.get("end", item.get("end_time", "")),
                     "location": item.get("location", ""),
                     "teacher": item.get("teacher", ""),
-                })
+                }
+                _append_schedule_item(today_schedule, schedule_keys, schedule_item)
 
     temporal = _mapping(state, "temporal")
     temporal_blocks = temporal.get("blocks", [])
@@ -114,6 +117,9 @@ def build_dashboard(
         for block in state_engine.get_temporal_blocks():
             data = block.to_dict()
             source = str(data.get("source", ""))
+            schedule_item = _temporal_schedule_item(data, today)
+            if schedule_item:
+                _append_schedule_item(today_schedule, schedule_keys, schedule_item)
             if source not in {"google_calendar", "jwxt"}:
                 continue
             start = str(data.get("start_time") or data.get("start") or "")
@@ -146,6 +152,8 @@ def build_dashboard(
                 "source": source,
             })
 
+    today_schedule.sort(key=lambda item: (str(item.get("start", "")), str(item.get("course", ""))))
+
     vocab_progress: dict[str, dict[str, Any]] = {}
     for aggregate_id, item in _mapping(state, "vocab").items():
         if isinstance(item, dict):
@@ -162,6 +170,17 @@ def build_dashboard(
     art = _art_summary(state, today)
     fitness = _fitness_summary(settings, today)
     sync_health = _sync_health(state)
+    chaoxing_health = sync_health["chaoxing"]
+    configured_mock = bool(getattr(settings, "chaoxing_mock", True))
+    chaoxing_health.setdefault("mock_enabled", configured_mock)
+    if configured_mock and chaoxing_health.get("status") == "unknown":
+        chaoxing_health["status"] = "mock"
+    homework_empty_reason = _homework_empty_reason(
+        homework,
+        hidden_count,
+        chaoxing_health,
+    )
+    schedule_empty_reason = _schedule_empty_reason(today_schedule, sync_health)
     consistency = _mapping(state, "calendar_consistency")
 
     return {
@@ -173,7 +192,10 @@ def build_dashboard(
         "homework": homework,
         "homework_count": len(homework),
         "homework_hidden_count": hidden_count,
+        "homework_empty_reason": homework_empty_reason,
         "today_schedule": today_schedule,
+        "schedule_count": len(today_schedule),
+        "schedule_empty_reason": schedule_empty_reason,
         "calendar_events": calendar_events,
         "temporal_blocks": blocks_today,
         "vocab_progress": vocab_progress,
@@ -202,6 +224,118 @@ def build_dashboard(
 def _mapping(state: dict[str, Any], key: str) -> dict[str, Any]:
     value = state.get(key, {}) if state else {}
     return value if isinstance(value, dict) else {}
+
+
+def _append_schedule_item(
+    schedule: list[dict[str, Any]],
+    seen: set[tuple[str, str, str]],
+    item: dict[str, Any],
+) -> None:
+    key = (
+        str(item.get("course", "")).strip().casefold(),
+        _schedule_key_time(item.get("start")),
+        _schedule_key_time(item.get("end")),
+    )
+    if not key[0] or key in seen:
+        return
+    seen.add(key)
+    schedule.append(item)
+
+
+def _schedule_key_time(value: Any) -> str:
+    text = str(value or "").strip()
+    parsed = _local_datetime(text)
+    return parsed.strftime("%H:%M") if parsed else text
+
+
+def _temporal_schedule_item(data: dict[str, Any], today: date) -> dict[str, Any] | None:
+    source = str(data.get("source", "")).strip()
+    block_type = str(data.get("block_type", data.get("type", ""))).strip()
+    if block_type and block_type not in COURSE_BLOCK_TYPES:
+        return None
+    if not block_type and source != "jwxt":
+        return None
+
+    start = _local_datetime(data.get("start_time") or data.get("start"))
+    end = _local_datetime(data.get("end_time") or data.get("end"))
+    if start is None or start.date() != today:
+        return None
+
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    course = str(
+        data.get("course")
+        or data.get("title")
+        or data.get("name")
+        or data.get("summary")
+        or metadata.get("course")
+        or ""
+    ).strip()
+    if not course:
+        return None
+
+    return {
+        "course": course,
+        "start": start.strftime("%H:%M"),
+        "end": end.strftime("%H:%M") if end else "",
+        "location": str(data.get("location") or metadata.get("location") or ""),
+        "teacher": str(metadata.get("teacher") or data.get("teacher") or data.get("description") or ""),
+        "source": source,
+    }
+
+
+def _local_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ)
+
+
+def _schedule_empty_reason(
+    schedule: list[dict[str, Any]],
+    sync_health: dict[str, dict[str, Any]],
+) -> str:
+    if schedule:
+        return ""
+    jwxt = sync_health.get("jwxt", {})
+    if jwxt.get("status") != "failed":
+        return "schedule_empty_no_blocks"
+    error = str(jwxt.get("error", "")).strip()
+    lowered = error.casefold()
+    auth_markers = ("auth", "cookie", "credential", "login", "认证", "登录", "凭据")
+    if any(marker in lowered for marker in auth_markers):
+        return "schedule_empty_auth_failed"
+    return error or "schedule_empty_no_blocks"
+
+
+def _homework_empty_reason(
+    homework: list[dict[str, Any]],
+    hidden_count: int,
+    chaoxing_health: dict[str, Any],
+) -> str:
+    if homework:
+        return ""
+    if chaoxing_health.get("mock_enabled"):
+        return (
+            "homework_empty_mock_filtered"
+            if hidden_count > 0
+            else "homework_empty_mock_enabled"
+        )
+    if chaoxing_health.get("status") == "failed":
+        return str(
+            chaoxing_health.get("error_code")
+            or chaoxing_health.get("error")
+            or "chaoxing_auth_failed"
+        )
+    return "homework_empty_no_items"
 
 
 def _latest_task_feedback(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -358,10 +492,17 @@ def _sync_health(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
                     ),
                 ),
                 "error": item.get("error", ""),
+                "error_code": item.get("error_code", ""),
                 "count": item.get(
                     "count",
                     item.get("block_count", item.get("total_assignments")),
                 ),
+                "pulled_count": item.get(
+                    "pulled_count",
+                    item.get("total_assignments", item.get("count")),
+                ),
+                "homework_count": item.get("homework_count"),
+                "mock_enabled": item.get("mock_enabled", False),
                 "duration_ms": item.get("duration_ms"),
             }
 

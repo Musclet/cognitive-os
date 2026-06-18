@@ -1826,6 +1826,67 @@ _SYSTEM_SYNC_ACTIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _system_sync_status(
+    action: str,
+    produced: list[Event],
+    dashboard: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if action != "sync_homework":
+        return None
+
+    terminal = next(
+        (
+            event
+            for event in reversed(produced)
+            if event.payload.get("source") == "chaoxing"
+            and event.event_type in {
+                EventType.CONNECTOR_FETCH_COMPLETED,
+                EventType.CONNECTOR_FETCH_FAILED,
+                EventType.CONNECTOR_FETCH_STARTED,
+            }
+        ),
+        None,
+    )
+    health = ((dashboard or {}).get("sync_health") or {}).get("chaoxing", {})
+    payload = terminal.payload if terminal else health
+    status = str(payload.get("status") or health.get("status") or "running")
+    if terminal:
+        if terminal.event_type == EventType.CONNECTOR_FETCH_FAILED:
+            status = "failed"
+        elif terminal.event_type == EventType.CONNECTOR_FETCH_COMPLETED:
+            status = "completed"
+        elif terminal.event_type == EventType.CONNECTOR_FETCH_STARTED:
+            status = "running"
+
+    return {
+        "status": status,
+        "error_code": payload.get("error_code") or health.get("error_code") or "",
+        "error": payload.get("error") or health.get("error") or "",
+        "mock_enabled": bool(
+            payload.get("mock_enabled", health.get("mock_enabled", False))
+        ),
+        "pulled_count": int(
+            payload.get(
+                "pulled_count",
+                payload.get("total_assignments", health.get("pulled_count", 0)),
+            )
+            or 0
+        ),
+        "homework_count": int(
+            payload.get(
+                "homework_count",
+                (dashboard or {}).get("homework_count", health.get("homework_count", 0)),
+            )
+            or 0
+        ),
+        "last_sync_at": (
+            payload.get("last_sync_at")
+            or health.get("last_sync")
+            or health.get("last_sync_at")
+        ),
+    }
+
+
 def _web_user_id(request: Request) -> str:
     """Return default user id from settings or fallback."""
     settings = _settings(request)
@@ -2776,13 +2837,16 @@ async def web_system_action(request: Request, body: dict):
     engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
     settings_obj = _settings(request)
     dashboard = build_dashboard(engine, settings_obj) if engine else None
+    sync_status = _system_sync_status(action, all_produced, dashboard)
+    ok = not sync_status or sync_status.get("status") != "failed"
 
     return {
-        "ok": True,
+        "ok": ok,
         "message": _system_action_label(action),
         "action": action,
         "events": produced_total,
         "dashboard": dashboard,
+        "sync_status": sync_status,
     }
 
 
@@ -3967,6 +4031,12 @@ async def web_status(request: Request):
         db_type = "postgresql" if db_url.startswith("postgresql") else "sqlite" if db_url else "unknown"
         settings_info = {
             "chaoxing_mock": bool(getattr(settings, "chaoxing_mock", True)),
+            "chaoxing_state_file_configured": bool(
+                str(getattr(settings, "chaoxing_state_file", "")).strip()
+            ),
+            "chaoxing_state_file_exists": os.path.isfile(
+                str(getattr(settings, "chaoxing_state_file", ""))
+            ),
             "jwxt_mock": bool(getattr(settings, "jwxt_mock", True)),
             "google_calendar_mock": bool(getattr(settings, "google_calendar_mock", True)),
             "momo_sync_enabled": bool(getattr(settings, "momo_sync_enabled", False)),

@@ -14,6 +14,9 @@ const STATUS_LABELS: Record<string, string> = {
   unknown: '未知',
   error: '异常',
   failed: '失败',
+  completed: '已完成',
+  running: '同步中',
+  mock: 'Mock 模式',
 }
 
 const STATUS_CLASS: Record<string, string> = {
@@ -22,6 +25,20 @@ const STATUS_CLASS: Record<string, string> = {
   unknown: 'warn',
   error: 'err',
   failed: 'err',
+  completed: 'ok',
+  running: 'warn',
+  mock: 'warn',
+}
+
+function chaoxingSyncText(status: any): string {
+  const state = status?.mock_enabled
+    ? 'Mock 模式'
+    : (STATUS_LABELS[status?.status] || status?.status || '未知')
+  const count = status?.pulled_count ?? status?.homework_count ?? 0
+  const error = status?.error_code
+    ? ` · ${status.error_code}${status.error ? `: ${status.error}` : ''}`
+    : ''
+  return `超星作业：${state} · 拉取 ${count} 项${error}`
 }
 
 export function SystemPage({ onAction }: Props) {
@@ -93,12 +110,39 @@ export function SystemPage({ onAction }: Props) {
     setSystemStatus(null)
     try {
       const res = await postSystemAction(action)
-      if (res.dashboard) setData(res.dashboard)
-      setSystemStatus({ type: res.ok ? 'ok' : 'err', text: `${res.message} · ${res.events} 个事件` })
+      let dashboard = res.dashboard
+      let syncStatus = res.sync_status
+      if (action === 'sync_homework' && syncStatus?.status === 'running') {
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          dashboard = await getDashboard()
+          const health = dashboard.sync_health?.chaoxing
+          syncStatus = {
+            status: health?.status || 'running',
+            error_code: health?.error_code,
+            error: health?.error,
+            mock_enabled: health?.mock_enabled,
+            pulled_count: health?.pulled_count ?? health?.count,
+            homework_count: dashboard.homework_count,
+            last_sync_at: health?.last_sync,
+          }
+          if (
+            syncStatus.status === 'completed'
+            || syncStatus.status === 'failed'
+            || syncStatus.mock_enabled
+          ) break
+        }
+      }
+      if (dashboard) setData(dashboard)
+      const syncFailed = syncStatus?.status === 'failed' || Boolean(syncStatus?.mock_enabled)
+      const statusText = action === 'sync_homework' && syncStatus
+        ? chaoxingSyncText(syncStatus)
+        : `${res.message} · ${res.events} 个事件`
+      setSystemStatus({ type: syncFailed || !res.ok ? 'err' : 'ok', text: statusText })
       load()
       announceWebAction({
-        ok: res.ok,
-        message: `${res.message} · ${res.events} 个事件`,
+        ok: res.ok && !syncFailed,
+        message: statusText,
         action: res.action,
         action_type: `system_${res.action}`,
         can_undo: false,
@@ -304,12 +348,20 @@ export function SystemPage({ onAction }: Props) {
             <div className="name">{key}</div>
             <div className="detail">
               <span className={`status ${STATUS_CLASS[val?.status] || 'warn'}`}>
-                {STATUS_LABELS[val?.status] || val?.status || '未知'}
+                {val?.mock_enabled ? 'Mock 模式' : (STATUS_LABELS[val?.status] || val?.status || '未知')}
               </span>
               {val?.last_sync && (
                 <span style={{ marginLeft: 8 }}>{val.last_sync.slice(0, 16)}</span>
               )}
+              {(val?.pulled_count != null || val?.homework_count != null) && (
+                <span style={{ marginLeft: 8 }}>
+                  拉取 {val.pulled_count ?? val.homework_count ?? 0} 项
+                </span>
+              )}
             </div>
+            {val?.error_code && (
+              <div style={{ fontSize: 10, color: 'var(--danger)', marginTop: 2 }}>{val.error_code}</div>
+            )}
             {val?.error && (
               <div style={{ fontSize: 10, color: 'var(--danger)', marginTop: 2 }}>{val.error}</div>
             )}
@@ -365,6 +417,14 @@ export function SystemPage({ onAction }: Props) {
             <div className="stat-row">
               <span className="label">超星 Mock</span>
               <span className="value">{webStatus.settings.chaoxing_mock ? '是' : '否'}</span>
+            </div>
+            <div className="stat-row">
+              <span className="label">超星 State</span>
+              <span className="value">
+                {!webStatus.settings.chaoxing_state_file_configured
+                  ? '未配置'
+                  : webStatus.settings.chaoxing_state_file_exists ? '已就绪' : '文件缺失'}
+              </span>
             </div>
             <div className="stat-row">
               <span className="label">教务 Mock</span>

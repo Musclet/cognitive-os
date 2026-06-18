@@ -7,8 +7,12 @@ Refactored: async, returns list[dict], no side effects.
 from __future__ import annotations
 
 import logging
+from typing import Any, TYPE_CHECKING
 
-from playwright.async_api import Page
+if TYPE_CHECKING:
+    from playwright.async_api import Page
+else:
+    Page = Any
 
 from src.connector.chaoxing.browser import ChaoxingBrowser, CHAOXING_URL
 
