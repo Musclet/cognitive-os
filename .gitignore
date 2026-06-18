@@ -33,3 +33,11 @@ ios/Podfile.lock
 ios/*.xcworkspace/xcuserdata/
 ios/*.xcodeproj/xcuserdata/
 build/
+*.spec
+
+# Launcher runtime
+.runtime/
+logs/launcher/
+
+# PyInstaller output
+dist/
