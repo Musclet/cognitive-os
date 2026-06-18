@@ -345,6 +345,147 @@ class TestDashboard:
         data = resp.json()
         assert len(data["today_schedule"]) == 1
         assert data["today_schedule"][0]["course"] == "数学"
+        assert data["schedule_count"] == 1
+        assert data["schedule_empty_reason"] == ""
+
+    def test_dashboard_projects_today_jwxt_temporal_block(self, client: TestClient, app: FastAPI):
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        start = datetime.now(local_tz).replace(hour=10, minute=10, second=0, microsecond=0)
+        block = TimeBlock(
+            block_id="jwxt-today",
+            source=TemporalSource.JWXT,
+            block_type=TimeBlockType.CLASS_LECTURE,
+            start=start,
+            end=start + timedelta(minutes=90),
+            title="计算机图形学",
+            location="实验楼 C-101",
+            description="张老师",
+            metadata={"teacher": "张老师"},
+        )
+        app.state.state_engine.get_temporal_blocks.return_value = [block]
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schedule_count"] == 1
+        assert data["schedule_empty_reason"] == ""
+        assert data["today_schedule"] == [{
+            "course": "计算机图形学",
+            "start": "10:10",
+            "end": "11:40",
+            "location": "实验楼 C-101",
+            "teacher": "张老师",
+            "source": "jwxt",
+        }]
+
+    def test_dashboard_ignores_non_today_and_non_course_temporal_blocks(
+        self,
+        client: TestClient,
+        app: FastAPI,
+    ):
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        today = datetime.now(local_tz).replace(hour=8, minute=20, second=0, microsecond=0)
+        app.state.state_engine.get_temporal_blocks.return_value = [
+            TimeBlock(
+                block_id="jwxt-tomorrow",
+                source=TemporalSource.JWXT,
+                block_type=TimeBlockType.CLASS_LAB,
+                start=today + timedelta(days=1),
+                end=today + timedelta(days=1, minutes=90),
+                title="明日实验",
+            ),
+            TimeBlock(
+                block_id="workout-today",
+                source=TemporalSource.SYSTEM,
+                block_type=TimeBlockType.WORKOUT_BLOCK,
+                start=today,
+                end=today + timedelta(hours=1),
+                title="力量训练",
+            ),
+            TimeBlock(
+                block_id="jwxt-reminder",
+                source=TemporalSource.JWXT,
+                block_type=TimeBlockType.REMINDER,
+                start=today,
+                end=today + timedelta(minutes=10),
+                title="教务提醒",
+            ),
+        ]
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["today_schedule"] == []
+        assert data["schedule_count"] == 0
+        assert data["schedule_empty_reason"] == "schedule_empty_no_blocks"
+
+    def test_dashboard_deduplicates_schedule_and_temporal_block(self, client: TestClient, app: FastAPI):
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        start = datetime.now(local_tz).replace(hour=8, minute=20, second=0, microsecond=0)
+        app.state.state_engine._state = {
+            "schedule": {
+                start.date().isoformat(): [{
+                    "course": "影视特效技术",
+                    "start": start.isoformat(),
+                    "end": (start + timedelta(minutes=90)).isoformat(),
+                    "location": "教学楼 A-301",
+                }]
+            }
+        }
+        app.state.state_engine.get_temporal_blocks.return_value = [
+            TimeBlock(
+                block_id="jwxt-duplicate",
+                source=TemporalSource.JWXT,
+                block_type=TimeBlockType.CLASS_LECTURE,
+                start=start,
+                end=start + timedelta(minutes=90),
+                title="影视特效技术",
+                location="教学楼 A-301",
+            )
+        ]
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schedule_count"] == 1
+        assert len(data["today_schedule"]) == 1
+
+    def test_dashboard_schedule_empty_reason_uses_jwxt_auth_failure(
+        self,
+        client: TestClient,
+        app: FastAPI,
+    ):
+        app.state.state_engine._state = {
+            "sync": {
+                "jwxt": {
+                    "status": "failed",
+                    "error": "教务登录失败：cookie 失效",
+                }
+            }
+        }
+
+        cookie = self._login(client)
+        resp = client.get("/api/web/dashboard", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["schedule_count"] == 0
+        assert data["schedule_empty_reason"] == "schedule_empty_auth_failed"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
