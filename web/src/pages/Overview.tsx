@@ -19,6 +19,7 @@ function homeworkEmptyText(reason?: string): string {
     chaoxing_auth_failed: '作业同步失败：超星认证失败',
     chaoxing_playwright_missing: '作业同步失败：Playwright 不可用',
     chaoxing_browser_unavailable: '作业同步失败：浏览器不可用',
+    chaoxing_no_matching_current_courses: '作业为空：超星课程未匹配当前学期课表',
   }
   return messages[reason || ''] || '暂无作业'
 }

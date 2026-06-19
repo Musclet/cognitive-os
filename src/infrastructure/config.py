@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     chaoxing_password: str = ""
     chaoxing_mock: bool = True
     chaoxing_state_file: str = "data/chaoxing_state.json"
+    chaoxing_sync_timeout_seconds: int = 300
 
     jwxt_username: str = ""
     jwxt_password: str = ""

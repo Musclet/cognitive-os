@@ -6,6 +6,7 @@ configuration is:
 ```env
 CHAOXING_MOCK=false
 CHAOXING_STATE_FILE=data/chaoxing_state.json
+CHAOXING_SYNC_TIMEOUT_SECONDS=300
 ```
 
 `CHAOXING_MOCK=true` is test/demo mode. The Web UI marks this mode explicitly;
@@ -58,3 +59,21 @@ Other error codes:
 
 The application reports only booleans, counts, timestamps, and structured error
 codes. It does not expose cookie or token values through the Web API.
+
+## Current-semester filtering and partial results
+
+Homework sync first reads current course names from JWXT temporal course blocks,
+then falls back to legacy schedule state and recent active JWXT course state.
+Chaoxing course names are matched with normalized width, whitespace and common
+bracket suffixes. If current course candidates exist but none match, sync returns
+`chaoxing_no_matching_current_courses` instead of scanning historical courses.
+
+If no current course candidates exist, sync falls back to all Chaoxing courses
+and reports `scanning_all_courses=true`. The Web system page reports total,
+filtered, skipped and scanned course counts.
+
+Each completed course writes its assignments into StateEngine immediately.
+`CHAOXING_SYNC_TIMEOUT_SECONDS` controls the batch timeout. If the timeout is
+reached after at least one course completes, the sync reports
+`partial=true` and `timeout=true`, while already fetched assignments remain
+available in Dashboard and Tasks.

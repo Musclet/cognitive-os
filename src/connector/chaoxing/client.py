@@ -22,6 +22,7 @@ from src.core.events import Event, EventType, AggregateType
 from src.connector.chaoxing.browser import ChaoxingBrowser
 from src.connector.chaoxing.course_scraper import fetch_course_list
 from src.connector.chaoxing.assignment_scraper import fetch_all_assignments
+from src.domain.course_topology import course_names_match
 from src.infrastructure.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,9 @@ CHAOXING_ERROR_MESSAGES = {
     "chaoxing_auth_failed": "Chaoxing authentication failed.",
     "chaoxing_playwright_missing": "Playwright is not available for Chaoxing sync.",
     "chaoxing_browser_unavailable": "The browser required for Chaoxing sync is unavailable.",
+    "chaoxing_no_matching_current_courses": (
+        "No Chaoxing courses matched the current semester schedule."
+    ),
     "chaoxing_sync_failed": "Chaoxing homework sync failed.",
 }
 
@@ -53,8 +57,13 @@ class ChaoxingConnector(Connector):
         course_registry=None,
         settings: Settings | None = None,
     ) -> None:
+        resolved_settings = settings or Settings()
         self._use_mock = use_mock
-        self._state_file = state_file or (settings or Settings()).chaoxing_state_file
+        self._state_file = state_file or resolved_settings.chaoxing_state_file
+        self._sync_timeout_seconds = max(
+            1,
+            int(resolved_settings.chaoxing_sync_timeout_seconds),
+        )
         self._headless = headless
         self._event_bus = event_bus
         self._course_registry = course_registry
@@ -89,6 +98,7 @@ class ChaoxingConnector(Connector):
             "state_file_present": bool(
                 not self._use_mock and Path(self._state_file).exists()
             ),
+            "sync_timeout_seconds": self._sync_timeout_seconds,
         }
 
     async def authenticate(self) -> bool:
@@ -197,7 +207,15 @@ class ChaoxingConnector(Connector):
         if query == "homework_list":
             scope = params.get("scope", None)
             on_progress = params.get("on_progress", None)
-            return await self._fetch_homework(scope=scope, on_progress=on_progress)
+            on_course_complete = params.get("on_course_complete", None)
+            on_filter_ready = params.get("on_filter_ready", None)
+            return await self._fetch_homework(
+                scope=scope,
+                on_progress=on_progress,
+                on_course_complete=on_course_complete,
+                on_filter_ready=on_filter_ready,
+                current_course_source=str(params.get("current_course_source", "")),
+            )
 
         return {"source": self.source_name, "error": f"unknown query: {query}"}
 
@@ -213,7 +231,14 @@ class ChaoxingConnector(Connector):
             "mock_enabled": False,
         }
 
-    async def _fetch_homework(self, scope=None, on_progress=None) -> dict[str, Any]:
+    async def _fetch_homework(
+        self,
+        scope=None,
+        on_progress=None,
+        on_course_complete=None,
+        on_filter_ready=None,
+        current_course_source: str = "",
+    ) -> dict[str, Any]:
         """Fetch homework assignments, optionally scoped to specific courses.
         Uses persistent browser: start once, reuse across fetches.
         """
@@ -223,40 +248,103 @@ class ChaoxingConnector(Connector):
         await self._browser.start()
         
         courses = await fetch_course_list(self._browser)
+        total_courses = len(courses)
+        active_course_candidates = len(scope) if scope else 0
+        scanning_all_courses = not bool(scope)
         if not courses:
             return {
                 "source": self.source_name,
                 "homeworks": [],
                 "courses": [],
+                "total_courses": 0,
+                "filtered_courses": 0,
+                "skipped_courses": 0,
+                "scanned_courses": 0,
+                "assignments_found": 0,
+                "active_course_candidates": active_course_candidates,
+                "current_course_source": current_course_source,
+                "scanning_all_courses": scanning_all_courses,
+                "partial": False,
+                "timeout": False,
                 "total_assignments": 0,
                 "pulled_count": 0,
                 "homework_count": 0,
                 "mock_enabled": False,
             }
 
-        # Scope filtering: match by course_id or name contains keyword
+        selected_courses = list(courses)
         if scope:
-            filtered = []
-            skipped = []
+            selected_courses = []
             for c in courses:
-                cid = c.get("course_id", "")
-                name = c.get("name", "")
-                if cid in scope or name in scope or any(kw in name for kw in scope):
-                    filtered.append(c)
-                else:
-                    skipped.append(name)
-            if skipped:
-                logger.info(
-                    "[CHAOXING_FILTER] skipped %d non-active courses: %s",
-                    len(skipped), ", ".join(skipped[:20]),
+                course_id = str(c.get("course_id", ""))
+                course_name = str(c.get("name", ""))
+                teacher = str(c.get("teacher", ""))
+                if course_id in scope or any(
+                    course_names_match(
+                        course_name,
+                        candidate,
+                        left_teacher=teacher,
+                    )
+                    for candidate in scope
+                ):
+                    selected_courses.append(c)
+            if not selected_courses:
+                logger.warning(
+                    "[CHAOXING_FILTER] no current courses matched candidates=%d total=%d",
+                    active_course_candidates,
+                    total_courses,
                 )
-            if filtered:
-                courses = filtered
-                logger.info("[CHAOXING_FILTER] %d/%d courses selected", len(courses), len(courses) + len(skipped))
-            else:
-                logger.warning("[CHAOXING_FILTER] no courses matched scope, fetching nothing")
+                return {
+                    "source": self.source_name,
+                    "error_code": "chaoxing_no_matching_current_courses",
+                    "error": CHAOXING_ERROR_MESSAGES[
+                        "chaoxing_no_matching_current_courses"
+                    ],
+                    "homeworks": [],
+                    "courses": [],
+                    "total_courses": total_courses,
+                    "filtered_courses": 0,
+                    "skipped_courses": total_courses,
+                    "scanned_courses": 0,
+                    "assignments_found": 0,
+                    "active_course_candidates": active_course_candidates,
+                    "current_course_source": current_course_source,
+                    "scanning_all_courses": False,
+                    "partial": False,
+                    "timeout": False,
+                    "pulled_count": 0,
+                    "homework_count": 0,
+                    "mock_enabled": False,
+                }
+            logger.info(
+                "[CHAOXING_FILTER] selected=%d total=%d candidates=%d source=%s",
+                len(selected_courses),
+                total_courses,
+                active_course_candidates,
+                current_course_source or "unknown",
+            )
+        else:
+            logger.info(
+                "[CHAOXING_FILTER] no current course candidates; scanning all=%d",
+                total_courses,
+            )
 
-        homeworks = await fetch_all_assignments(self._browser, courses, on_progress=on_progress)
+        if on_filter_ready:
+            await on_filter_ready({
+                "total_courses": total_courses,
+                "filtered_courses": len(selected_courses),
+                "skipped_courses": total_courses - len(selected_courses),
+                "active_course_candidates": active_course_candidates,
+                "current_course_source": current_course_source,
+                "scanning_all_courses": scanning_all_courses,
+            })
+
+        homeworks = await fetch_all_assignments(
+            self._browser,
+            selected_courses,
+            on_progress=on_progress,
+            on_course_complete=on_course_complete,
+        )
 
         # Filter out errors
         valid = [h for h in homeworks if h.get("title")]
@@ -265,8 +353,17 @@ class ChaoxingConnector(Connector):
         return {
             "source": self.source_name,
             "homeworks": valid,
-            "courses": courses,
-            "total_courses": len(courses),
+            "courses": selected_courses,
+            "total_courses": total_courses,
+            "filtered_courses": len(selected_courses),
+            "skipped_courses": total_courses - len(selected_courses),
+            "scanned_courses": len(selected_courses),
+            "assignments_found": len(valid),
+            "active_course_candidates": active_course_candidates,
+            "current_course_source": current_course_source,
+            "scanning_all_courses": scanning_all_courses,
+            "partial": False,
+            "timeout": False,
             "total_assignments": len(valid),
             "pulled_count": len(valid),
             "homework_count": len(valid),
@@ -305,17 +402,21 @@ class ChaoxingConnector(Connector):
             return []
 
         scope = event.payload.get("scope", None)
+        current_course_source = str(event.payload.get("current_course_source", ""))
         # Auto-derive scope from registry if not explicitly provided
         if scope is None and self._course_registry is not None:
             self._course_registry.compute_scores()
             scope = self._course_registry.get_active_scope_names()
             if scope:
                 logger.info("[SCOPE] derived from registry: %d courses", len(scope))
+                current_course_source = "course_registry"
             else:
                 logger.info("[SCOPE] registry empty, doing full fetch")
         course_count = len(scope) if scope else "all"
 
-        task = asyncio.create_task(self._batched_fetch(event, scope))
+        task = asyncio.create_task(
+            self._batched_fetch(event, scope, current_course_source)
+        )
         task.add_done_callback(_log_bg_task_exception)
 
         return [started_event, Event(
@@ -326,6 +427,9 @@ class ChaoxingConnector(Connector):
             payload={
                 "source": self.source_name,
                 "course_count": course_count,
+                "active_course_candidates": len(scope) if scope else 0,
+                "current_course_source": current_course_source,
+                "scanning_all_courses": not bool(scope),
                 "mock_enabled": False,
             },
         )]
@@ -356,6 +460,17 @@ class ChaoxingConnector(Connector):
         payload.setdefault("pulled_count", len(payload.get("homeworks", [])))
         payload.setdefault("homework_count", len(payload.get("homeworks", [])))
         payload.setdefault("total_assignments", payload["pulled_count"])
+        payload.setdefault("assignments_found", payload["pulled_count"])
+        payload.setdefault("total_courses", len(payload.get("courses", [])))
+        payload.setdefault("filtered_courses", len(payload.get("courses", [])))
+        payload.setdefault(
+            "skipped_courses",
+            max(payload["total_courses"] - payload["filtered_courses"], 0),
+        )
+        payload.setdefault("scanned_courses", payload["filtered_courses"])
+        payload.setdefault("scanning_all_courses", False)
+        payload.setdefault("partial", False)
+        payload.setdefault("timeout", False)
         metadata = {"trace_id": str(event.event_id)}
         if duration_ms is not None:
             metadata["duration_ms"] = round(duration_ms, 1)
@@ -373,26 +488,45 @@ class ChaoxingConnector(Connector):
         event: Event,
         error_code: str,
         duration_ms: float | None = None,
+        details: dict[str, Any] | None = None,
     ) -> Event:
         metadata = {"trace_id": str(event.event_id)}
         if duration_ms is not None:
             metadata["duration_ms"] = round(duration_ms, 1)
+        payload = {
+            "source": self.source_name,
+            "error_code": error_code,
+            "error": CHAOXING_ERROR_MESSAGES.get(
+                error_code,
+                CHAOXING_ERROR_MESSAGES["chaoxing_sync_failed"],
+            ),
+            "mock_enabled": self._use_mock,
+            "pulled_count": 0,
+            "homework_count": 0,
+        }
+        for key in (
+            "total_courses",
+            "filtered_courses",
+            "skipped_courses",
+            "scanned_courses",
+            "assignments_found",
+            "active_course_candidates",
+            "current_course_source",
+            "scanning_all_courses",
+            "partial",
+            "timeout",
+        ):
+            if details and key in details:
+                payload[key] = details[key]
+        if details:
+            payload["pulled_count"] = int(details.get("assignments_found", 0) or 0)
+            payload["homework_count"] = int(details.get("assignments_found", 0) or 0)
         return Event(
             event_type=EventType.CONNECTOR_FETCH_FAILED,
             aggregate_id=event.aggregate_id,
             aggregate_type=AggregateType.HOMEWORK,
             causation_id=event.event_id,
-            payload={
-                "source": self.source_name,
-                "error_code": error_code,
-                "error": CHAOXING_ERROR_MESSAGES.get(
-                    error_code,
-                    CHAOXING_ERROR_MESSAGES["chaoxing_sync_failed"],
-                ),
-                "mock_enabled": self._use_mock,
-                "pulled_count": 0,
-                "homework_count": 0,
-            },
+            payload=payload,
             metadata=metadata,
         )
 
@@ -409,6 +543,7 @@ class ChaoxingConnector(Connector):
             return self._failed_event(
                 event,
                 str(data.get("error_code") or "chaoxing_sync_failed"),
+                details=data,
             )
         return self._completed_event(event, data)
 
@@ -425,7 +560,12 @@ class ChaoxingConnector(Connector):
             "mock_enabled": False,
         }
 
-    async def _batched_fetch(self, event: Event, scope):
+    async def _batched_fetch(
+        self,
+        event: Event,
+        scope,
+        current_course_source: str = "",
+    ):
         """Background task: fetch with progress, emit completion via EventBus.
 
         Uses publish_cascade so CONNECTOR_FETCH_COMPLETED → HOMEWORK_NEW
@@ -437,12 +577,27 @@ class ChaoxingConnector(Connector):
         self._fetching = True
         self._fetch_count += 1
         self._last_fetch_at = t_start
-        fetch_timeout = 300  # seconds (9 courses × ~15s each + buffer)
+        fetch_timeout = self._sync_timeout_seconds
         retries = 1 if not self._use_mock else 0  # no retry in mock mode
+        progress = {
+            "total_courses": 0,
+            "filtered_courses": len(scope) if scope else 0,
+            "skipped_courses": 0,
+            "scanned_courses": 0,
+            "assignments_found": 0,
+            "active_course_candidates": len(scope) if scope else 0,
+            "current_course_source": current_course_source,
+            "scanning_all_courses": not bool(scope),
+            "partial": False,
+            "timeout": False,
+        }
 
         for attempt in range(retries + 1):
             try:
                 async def on_progress(done, total, items):
+                    progress["filtered_courses"] = total
+                    progress["scanned_courses"] = done
+                    progress["assignments_found"] = items
                     if self._event_bus:
                         await self._event_bus.publish(Event(
                             event_type=EventType.SYNC_PROGRESS,
@@ -453,12 +608,65 @@ class ChaoxingConnector(Connector):
                                 "source": self.source_name,
                                 "progress": f"{done}/{total}",
                                 "items_so_far": items,
+                                **progress,
                             },
+                        ))
+
+                async def on_filter_ready(stats):
+                    progress.update(stats)
+                    if self._event_bus:
+                        await self._event_bus.publish(Event(
+                            event_type=EventType.SYNC_PROGRESS,
+                            aggregate_id=event.aggregate_id,
+                            aggregate_type=AggregateType.HOMEWORK,
+                            causation_id=event.event_id,
+                            payload={
+                                "source": self.source_name,
+                                "progress": f"0/{stats['filtered_courses']}",
+                                "items_so_far": 0,
+                                **progress,
+                            },
+                        ))
+
+                async def on_course_complete(done, total, assignments):
+                    valid = [item for item in assignments if item.get("title")]
+                    progress["filtered_courses"] = total
+                    progress["scanned_courses"] = done
+                    progress["assignments_found"] += len(valid)
+                    progress["partial"] = done < total
+                    if not self._event_bus:
+                        return
+                    await self._event_bus.publish(Event(
+                        event_type=EventType.SYNC_PROGRESS,
+                        aggregate_id=event.aggregate_id,
+                        aggregate_type=AggregateType.HOMEWORK,
+                        causation_id=event.event_id,
+                        payload={
+                            "source": self.source_name,
+                            "progress": f"{done}/{total}",
+                            "items_so_far": progress["assignments_found"],
+                            **progress,
+                        },
+                    ))
+                    for homework in valid:
+                        await self._event_bus.publish_cascade(Event(
+                            event_type=EventType.HOMEWORK_NEW,
+                            aggregate_id=homework.get(
+                                "id",
+                                homework.get("title", "unknown"),
+                            ),
+                            aggregate_type=AggregateType.HOMEWORK,
+                            causation_id=event.event_id,
+                            payload=homework,
+                            metadata={"trace_id": str(event.event_id)},
                         ))
 
                 params = dict(event.payload)
                 params["scope"] = scope
                 params["on_progress"] = on_progress
+                params["on_course_complete"] = on_course_complete
+                params["on_filter_ready"] = on_filter_ready
+                params["current_course_source"] = current_course_source
                 data = await asyncio.wait_for(self.fetch(params), timeout=fetch_timeout)
 
                 if data.get("error"):
@@ -475,7 +683,12 @@ class ChaoxingConnector(Connector):
                     self._fetching = False
                     if self._event_bus:
                         await self._event_bus.publish(
-                            self._failed_event(event, error_code, duration_ms)
+                            self._failed_event(
+                                event,
+                                error_code,
+                                duration_ms,
+                                details=data,
+                            )
                         )
                     return
 
@@ -508,23 +721,47 @@ class ChaoxingConnector(Connector):
                         await self._browser.save_state()
                     except Exception:
                         pass
-                if attempt < retries:
-                    logger.info("[CONNECTOR] retrying after %ds backoff...", 5)
-                    await asyncio.sleep(5)
-                    continue
-                self._fetch_failure += 1
-                self._last_error = f"timeout after {fetch_timeout}s"
-                self._last_error_code = "chaoxing_browser_unavailable"
+                progress["partial"] = progress["scanned_courses"] > 0
+                progress["timeout"] = True
                 self._last_fetch_duration_ms = duration_ms
                 self._fetching = False
                 if self._event_bus:
-                    await self._event_bus.publish(
-                        self._failed_event(
+                    if progress["scanned_courses"] > 0:
+                        self._fetch_success += 1
+                        self._last_error = None
+                        self._last_error_code = ""
+                        completed = self._completed_event(
                             event,
-                            "chaoxing_browser_unavailable",
+                            {
+                                "source": self.source_name,
+                                "homeworks": [],
+                                "courses": [],
+                                "total_assignments": progress["assignments_found"],
+                                "pulled_count": progress["assignments_found"],
+                                "homework_count": progress["assignments_found"],
+                                "message": (
+                                    "Chaoxing sync timed out; partial homework "
+                                    "was preserved."
+                                ),
+                                **progress,
+                            },
                             duration_ms,
                         )
-                    )
+                        await self._event_bus.publish_cascade(completed)
+                    else:
+                        self._fetch_failure += 1
+                        self._last_error = CHAOXING_ERROR_MESSAGES[
+                            "chaoxing_browser_unavailable"
+                        ]
+                        self._last_error_code = "chaoxing_browser_unavailable"
+                        await self._event_bus.publish(
+                            self._failed_event(
+                                event,
+                                "chaoxing_browser_unavailable",
+                                duration_ms,
+                                details=progress,
+                            )
+                        )
                 return
 
             except Exception as exc:

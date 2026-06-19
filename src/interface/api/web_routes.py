@@ -1893,6 +1893,45 @@ def _system_sync_status(
             )
             or 0
         ),
+        "total_courses": int(
+            payload.get("total_courses", health.get("total_courses", 0)) or 0
+        ),
+        "filtered_courses": int(
+            payload.get("filtered_courses", health.get("filtered_courses", 0)) or 0
+        ),
+        "skipped_courses": int(
+            payload.get("skipped_courses", health.get("skipped_courses", 0)) or 0
+        ),
+        "scanned_courses": int(
+            payload.get("scanned_courses", health.get("scanned_courses", 0)) or 0
+        ),
+        "assignments_found": int(
+            payload.get(
+                "assignments_found",
+                health.get("assignments_found", payload.get("pulled_count", 0)),
+            )
+            or 0
+        ),
+        "active_course_candidates": int(
+            payload.get(
+                "active_course_candidates",
+                health.get("active_course_candidates", 0),
+            )
+            or 0
+        ),
+        "current_course_source": (
+            payload.get("current_course_source")
+            or health.get("current_course_source")
+            or ""
+        ),
+        "scanning_all_courses": bool(
+            payload.get(
+                "scanning_all_courses",
+                health.get("scanning_all_courses", False),
+            )
+        ),
+        "partial": bool(payload.get("partial", health.get("partial", False))),
+        "timeout": bool(payload.get("timeout", health.get("timeout", False))),
         "last_sync_at": (
             payload.get("last_sync_at")
             or health.get("last_sync")

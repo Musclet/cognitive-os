@@ -341,6 +341,7 @@ class StateEngine:
             EventType.CONNECTOR_FETCH_STARTED: self._on_connector_fetch_started,
             EventType.CONNECTOR_FETCH_COMPLETED: self._on_connector_fetch_completed,
             EventType.CONNECTOR_FETCH_FAILED: self._on_connector_fetch_failed,
+            EventType.SYNC_PROGRESS: self._on_sync_progress,
             EventType.TEMPORAL_BLOCK_ADDED: self._on_temporal_block_added,
             EventType.TEMPORAL_BLOCK_UPDATED: self._on_temporal_block_updated,
             EventType.TEMPORAL_BLOCK_CANCELLED: self._on_temporal_block_cancelled,
@@ -511,11 +512,24 @@ class StateEngine:
             "auto_login_attempted",
             "success",
             "calendar_id",
+            "total_courses",
+            "filtered_courses",
+            "skipped_courses",
+            "scanned_courses",
+            "assignments_found",
+            "active_course_candidates",
+            "current_course_source",
+            "scanning_all_courses",
+            "partial",
+            "timeout",
         ):
             if key in event.payload:
                 view[key] = event.payload.get(key)
         if "duration_ms" in event.metadata:
             view["duration_ms"] = event.metadata.get("duration_ms")
+
+    def _on_sync_progress(self, event: Event) -> None:
+        self._update_sync_health(event, "running")
 
     def _on_connector_fetch_started(self, event: Event) -> None:
         """Prepare source-owned temporal state before a fresh connector read."""
