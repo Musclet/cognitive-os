@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
+from scripts.refresh_jwxt_state import (
+    EXIT_COOKIE_WRITE_ERROR,
+    EXIT_GITIGNORE_FAIL,
+    EXIT_LOGIN_NOT_VERIFIED,
+    EXIT_OK,
+    EXIT_PAGE_LOAD_FAILED,
+    EXIT_PLAYWRIGHT_MISSING,
+    _check_gitignore,
+    _safe_url_parts,
+    _verify_schedule_access,
+    _write_cookies_atomic,
+)
 from src.connector.jwxt.client import JwxtConnector, JwxtSyncError
 from src.core.events import AggregateType, Event, EventType
 from src.core.state_engine import StateEngine
@@ -17,6 +32,10 @@ SENTINEL_USERNAME = "DO_NOT_LEAK_JWXT_USERNAME"
 SENTINEL_PASSWORD = "DO_NOT_LEAK_JWXT_PASSWORD"
 SENTINEL_COOKIE = "DO_NOT_LEAK_JWXT_COOKIE"
 LOCAL_TZ = timezone(timedelta(hours=8))
+
+
+def _scripts_dir() -> Path:
+    return Path(__file__).resolve().parent.parent.parent / "scripts"
 
 
 def _settings(tmp_path, *, username: str = "", password: str = "") -> Settings:
@@ -251,6 +270,134 @@ async def test_successful_real_sync_creates_temporal_blocks_for_dashboard(tmp_pa
     assert completed.payload["pulled_count"] == 1
     assert dashboard["schedule_count"] == 1
     assert dashboard["today_schedule"][0]["course"] == "自动同步课程"
+
+
+class _FakeHttpClient:
+    response = None
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+    async def post(self, url, **kwargs):
+        return self.response
+
+
+class TestRefreshJwxtState:
+    def test_help_flag(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(_scripts_dir() / "refresh_jwxt_state.py"),
+                "--help",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        assert "visible manual login" in result.stdout
+
+    def test_default_cookie_path_from_settings(self):
+        settings = Settings(_env_file=None)
+        assert settings.jwxt_cookies_path == "data/jwxt_cookies.json"
+
+    def test_safe_url_parts_excludes_query_and_fragment(self):
+        domain, path = _safe_url_parts(
+            "https://jw.unn.edu.cn/xtgl/index_initMenu.html?token=secret#private"
+        )
+
+        assert domain == "jw.unn.edu.cn"
+        assert path == "/xtgl/index_initMenu.html"
+        assert "secret" not in f"{domain}{path}"
+
+    def test_atomic_cookie_write_keeps_values_out_of_return_data(self, tmp_path):
+        cookie_path = tmp_path / "jwxt-cookies.json"
+        cookies = [{"name": "session", "value": SENTINEL_COOKIE}]
+
+        result = _write_cookies_atomic(cookie_path, cookies)
+
+        assert result is None
+        assert cookie_path.exists()
+        assert SENTINEL_COOKIE not in repr(result)
+        assert not (tmp_path / ".jwxt-cookies.json.tmp").exists()
+
+    def test_gitignore_allows_default_data_cookie_path(self):
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        assert _check_gitignore(repo_root / "data" / "jwxt_cookies.json") is True
+
+    def test_exit_codes_are_distinct(self):
+        codes = {
+            EXIT_OK,
+            EXIT_PLAYWRIGHT_MISSING,
+            EXIT_PAGE_LOAD_FAILED,
+            EXIT_LOGIN_NOT_VERIFIED,
+            EXIT_GITIGNORE_FAIL,
+            EXIT_COOKIE_WRITE_ERROR,
+        }
+        assert len(codes) == 6
+
+    @pytest.mark.asyncio
+    async def test_schedule_verification_accepts_kb_list(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import httpx
+
+        settings = _settings(tmp_path)
+        _FakeHttpClient.response = _Response(
+            200,
+            data={"kbList": [{"kcmc": "课程"}]},
+        )
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHttpClient)
+
+        verified, error_code, count = await _verify_schedule_access(
+            [{"name": "session", "value": SENTINEL_COOKIE}],
+            settings,
+        )
+
+        assert verified is True
+        assert error_code == ""
+        assert count == 1
+        assert SENTINEL_COOKIE not in repr((verified, error_code, count))
+
+    @pytest.mark.asyncio
+    async def test_schedule_verification_rejects_login_redirect(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import httpx
+
+        settings = _settings(tmp_path)
+        _FakeHttpClient.response = _Response(
+            302,
+            location="/xtgl/login_slogin.html",
+        )
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeHttpClient)
+
+        verified, error_code, count = await _verify_schedule_access(
+            [{"name": "session", "value": SENTINEL_COOKIE}],
+            settings,
+        )
+
+        assert verified is False
+        assert error_code == "jwxt_cookie_expired"
+        assert count == 0
+
+    def test_script_source_contains_no_hardcoded_sensitive_value(self):
+        source = (_scripts_dir() / "refresh_jwxt_state.py").read_text(
+            encoding="utf-8"
+        )
+        assert SENTINEL_USERNAME not in source
+        assert SENTINEL_PASSWORD not in source
+        assert SENTINEL_COOKIE not in source
 
 
 # ══════════════════════════════════════════════════════════════════════════════
