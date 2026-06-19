@@ -5,6 +5,10 @@ This keeps external course names aligned with the user's real course map.
 
 from __future__ import annotations
 
+import re
+import unicodedata
+from typing import Any
+
 
 COURSE_ALIASES = {
     "Unity应用实训": "虚拟现实技术（张辉）",
@@ -82,3 +86,109 @@ def chaoxing_scope_names(course_names: list[str]) -> list[str]:
                 if target == canonical:
                     add(alias)
     return scope
+
+
+def course_name_match_keys(
+    name: str | None,
+    teacher: str | None = None,
+) -> set[str]:
+    """Return tolerant comparison keys without changing the display name."""
+    canonical = normalize_course_name(name, teacher)
+    normalized = unicodedata.normalize("NFKC", canonical).casefold().strip()
+    normalized = re.sub(r"\s+", " ", normalized)
+    if not normalized:
+        return set()
+
+    keys = {normalized, normalized.replace(" ", "")}
+    without_suffix = re.sub(r"\s*[\(\[【][^\)\]】]+[\)\]】]\s*$", "", normalized)
+    without_suffix = without_suffix.strip()
+    if without_suffix:
+        keys.add(without_suffix)
+        keys.add(without_suffix.replace(" ", ""))
+    return {key for key in keys if key}
+
+
+def course_names_match(
+    left: str | None,
+    right: str | None,
+    *,
+    left_teacher: str | None = None,
+    right_teacher: str | None = None,
+) -> bool:
+    """Match course names across minor spacing, width and suffix differences."""
+    left_keys = course_name_match_keys(left, left_teacher)
+    right_keys = course_name_match_keys(right, right_teacher)
+    if not left_keys or not right_keys:
+        return False
+    if left_keys & right_keys:
+        return True
+    return any(
+        min(len(left_key), len(right_key)) >= 4
+        and (left_key in right_key or right_key in left_key)
+        for left_key in left_keys
+        for right_key in right_keys
+    )
+
+
+def current_course_candidates(state_engine: Any) -> tuple[list[str], str]:
+    """Read current course names in priority order from durable schedule state."""
+    if state_engine is None:
+        return [], ""
+
+    temporal_names: list[str] = []
+    for block in state_engine.get_temporal_blocks():
+        source = str(getattr(block, "source", ""))
+        block_type = str(getattr(block, "block_type", ""))
+        if source != "jwxt" or block_type not in {
+            "class_lecture",
+            "class_lab",
+            "course",
+            "schedule",
+            "schedule_item",
+        }:
+            continue
+        temporal_names.append(str(getattr(block, "title", "")))
+    names = _dedupe_course_names(temporal_names)
+    if names:
+        return names, "temporal_blocks"
+
+    schedule_names: list[str] = []
+    for view in state_engine.get_all("schedule").values():
+        if not isinstance(view, dict):
+            continue
+        entries = view.get("entries", [])
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict):
+                    schedule_names.append(
+                        str(entry.get("course") or entry.get("title") or entry.get("name") or "")
+                    )
+    names = _dedupe_course_names(schedule_names)
+    if names:
+        return names, "state.schedule"
+
+    jwxt_names = [
+        str(view.get("course_name", ""))
+        for view in state_engine.get_all("course").values()
+        if isinstance(view, dict)
+        and view.get("active", True)
+        and str(view.get("source", "")) == "jwxt"
+    ]
+    names = _dedupe_course_names(jwxt_names)
+    if names:
+        return names, "jwxt_course_state"
+    return [], ""
+
+
+def _dedupe_course_names(names: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        canonical = normalize_course_name(name)
+        keys = course_name_match_keys(canonical)
+        key = min(keys, key=len) if keys else ""
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(canonical)
+    return result

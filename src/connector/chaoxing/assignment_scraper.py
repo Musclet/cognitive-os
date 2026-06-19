@@ -273,6 +273,7 @@ async def fetch_all_assignments(
     browser: ChaoxingBrowser,
     courses: list[dict],
     on_progress=None,
+    on_course_complete=None,
     batch_size: int = 5,
 ) -> list[dict]:
     """Fetch assignments for all courses.
@@ -294,6 +295,8 @@ async def fetch_all_assignments(
                 browser, course["name"], course["url"]
             )
             all_assignments.extend(assignments)
+            if on_course_complete:
+                await on_course_complete(i + 1, total, assignments)
             if (i + 1) % batch_size == 0 or (i + 1) == total:
                 logger.info("[ASSIGNMENT] progress: %d/%d courses, %d items", i+1, total, len(all_assignments))
                 if on_progress:
@@ -314,6 +317,8 @@ async def fetch_all_assignments(
                 "deadline": "",
                 "status": "error",
             })
+            if on_course_complete:
+                await on_course_complete(i + 1, total, [])
 
     
     logger.info("[ASSIGNMENT] complete: %d courses, %d assignments total", total, len(all_assignments))

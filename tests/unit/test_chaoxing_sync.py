@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from src.connector.chaoxing import browser as chaoxing_browser_module
+from src.connector.chaoxing import client as chaoxing_client_module
 from src.connector.chaoxing.client import ChaoxingConnector
+from src.core.bus import EventBus
 from src.core.events import AggregateType, Event, EventType
 from src.core.state_engine import StateEngine
+from src.domain.dashboard.query import build_dashboard
 from src.domain.homework.handlers import handle_fetch_completed
+from src.infrastructure.config import Settings
 
 SENTINEL = "DO_NOT_LEAK_CHAOXING_SECRET"
 FORBIDDEN_SENSITIVE_TEXT = (
@@ -167,6 +173,217 @@ async def test_real_sync_success_enters_state_engine(tmp_path):
     assert sync["mock_enabled"] is False
     assert sync["pulled_count"] == 1
     assert sync["homework_count"] == 1
+
+
+def _connector_settings(timeout: int = 300):
+    return SimpleNamespace(
+        chaoxing_state_file="data/chaoxing_state.json",
+        chaoxing_sync_timeout_seconds=timeout,
+    )
+
+
+def test_chaoxing_sync_timeout_setting_defaults_to_300_seconds():
+    assert Settings(_env_file=None).chaoxing_sync_timeout_seconds == 300
+
+
+@pytest.mark.asyncio
+async def test_real_sync_filters_58_courses_to_current_candidates(monkeypatch):
+    courses = [
+        {
+            "course_id": f"course-{index}",
+            "name": f"历史课程 {index}",
+            "url": f"https://example.test/{index}",
+        }
+        for index in range(53)
+    ] + [
+        {
+            "course_id": "current-data",
+            "name": "数据　结构（张老师）",
+            "url": "https://example.test/data",
+        },
+        {
+            "course_id": "current-os",
+            "name": "操作系统",
+            "url": "https://example.test/os",
+        },
+        {
+            "course_id": "current-network",
+            "name": "计算机网络",
+            "url": "https://example.test/network",
+        },
+        {
+            "course_id": "current-db",
+            "name": "数据库原理",
+            "url": "https://example.test/db",
+        },
+        {
+            "course_id": "current-vr",
+            "name": "Unity应用实训",
+            "url": "https://example.test/vr",
+        },
+    ]
+    selected: list[dict] = []
+
+    async def fake_fetch_all(browser, filtered, **kwargs):
+        selected.extend(filtered)
+        return []
+
+    monkeypatch.setattr(
+        chaoxing_client_module,
+        "fetch_course_list",
+        AsyncMock(return_value=courses),
+    )
+    monkeypatch.setattr(
+        chaoxing_client_module,
+        "fetch_all_assignments",
+        fake_fetch_all,
+    )
+    connector = ChaoxingConnector(
+        use_mock=True,
+        settings=_connector_settings(),
+    )
+    connector._browser = AsyncMock()
+
+    result = await connector._fetch_homework(
+        scope=[
+            "数据 结构",
+            "操作系统",
+            "计算机网络",
+            "数据库原理",
+            "虚拟现实技术（张辉）",
+        ],
+        current_course_source="temporal_blocks",
+    )
+
+    assert result["total_courses"] == 58
+    assert result["filtered_courses"] == 5
+    assert result["skipped_courses"] == 53
+    assert len(selected) == 5
+    assert result["scanning_all_courses"] is False
+
+
+@pytest.mark.asyncio
+async def test_real_sync_without_current_courses_scans_all(monkeypatch):
+    courses = [
+        {"course_id": str(index), "name": f"课程 {index}", "url": "https://example.test"}
+        for index in range(3)
+    ]
+    selected: list[dict] = []
+
+    async def fake_fetch_all(browser, filtered, **kwargs):
+        selected.extend(filtered)
+        return []
+
+    monkeypatch.setattr(
+        chaoxing_client_module,
+        "fetch_course_list",
+        AsyncMock(return_value=courses),
+    )
+    monkeypatch.setattr(
+        chaoxing_client_module,
+        "fetch_all_assignments",
+        fake_fetch_all,
+    )
+    connector = ChaoxingConnector(
+        use_mock=True,
+        settings=_connector_settings(),
+    )
+    connector._browser = AsyncMock()
+
+    result = await connector._fetch_homework(scope=[])
+
+    assert len(selected) == 3
+    assert result["scanning_all_courses"] is True
+    assert result["filtered_courses"] == 3
+
+
+@pytest.mark.asyncio
+async def test_real_sync_with_no_matching_current_courses_stops(monkeypatch):
+    fetch_all = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        chaoxing_client_module,
+        "fetch_course_list",
+        AsyncMock(return_value=[
+            {"course_id": "old", "name": "历史课程", "url": "https://example.test"},
+        ]),
+    )
+    monkeypatch.setattr(chaoxing_client_module, "fetch_all_assignments", fetch_all)
+    connector = ChaoxingConnector(
+        use_mock=True,
+        settings=_connector_settings(),
+    )
+    connector._browser = AsyncMock()
+
+    result = await connector._fetch_homework(scope=["当前课程"])
+
+    assert result["error_code"] == "chaoxing_no_matching_current_courses"
+    assert result["total_courses"] == 1
+    assert result["active_course_candidates"] == 1
+    assert result["scanned_courses"] == 0
+    fetch_all.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_timeout_preserves_partial_homework_in_dashboard(monkeypatch):
+    bus = EventBus()
+    engine = StateEngine()
+    bus.subscribe(EventType.SYNC_PROGRESS, engine.apply)
+    bus.subscribe(EventType.HOMEWORK_NEW, engine.apply)
+    bus.subscribe(EventType.CONNECTOR_FETCH_COMPLETED, engine.apply)
+    bus.subscribe(EventType.CONNECTOR_FETCH_FAILED, engine.apply)
+
+    connector = ChaoxingConnector(
+        use_mock=False,
+        event_bus=bus,
+        settings=_connector_settings(),
+    )
+    connector._browser = AsyncMock()
+    connector._authenticated = True
+    connector._sync_timeout_seconds = 0.01
+
+    async def partial_fetch(params):
+        await params["on_filter_ready"]({
+            "total_courses": 58,
+            "filtered_courses": 5,
+            "skipped_courses": 53,
+            "active_course_candidates": 5,
+            "current_course_source": "temporal_blocks",
+            "scanning_all_courses": False,
+        })
+        await params["on_course_complete"](1, 5, [{
+            "id": "partial-homework",
+            "course": "数据结构",
+            "title": "第一次作业",
+            "deadline": "2026-06-30T12:00:00Z",
+            "status": "pending",
+        }])
+        await asyncio.sleep(1)
+        return {}
+
+    monkeypatch.setattr(connector, "fetch", partial_fetch)
+
+    await connector._batched_fetch(
+        _fetch_event(),
+        ["数据结构", "操作系统", "计算机网络", "数据库原理", "软件工程"],
+        "temporal_blocks",
+    )
+
+    assert engine.get_view("homework", "partial-homework")["title"] == "第一次作业"
+    sync = engine.get_view("sync", "chaoxing")
+    assert sync["status"] == "completed"
+    assert sync["total_courses"] == 58
+    assert sync["filtered_courses"] == 5
+    assert sync["scanned_courses"] == 1
+    assert sync["assignments_found"] == 1
+    assert sync["partial"] is True
+    assert sync["timeout"] is True
+
+    dashboard = build_dashboard(
+        engine,
+        Settings(_env_file=None, chaoxing_mock=False),
+    )
+    assert dashboard["homework_count"] == 1
+    assert dashboard["homework"][0]["id"] == "partial-homework"
 
 
 # ══════════════════════════════════════════════════════════════════════════════

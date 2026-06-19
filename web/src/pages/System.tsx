@@ -38,7 +38,18 @@ function chaoxingSyncText(status: any): string {
   const error = status?.error_code
     ? ` · ${status.error_code}${status.error ? `: ${status.error}` : ''}`
     : ''
-  return `超星作业：${state} · 拉取 ${count} 项${error}`
+  const courseStats = status?.total_courses != null
+    ? ` · 课程 ${status.scanned_courses ?? 0}/${status.filtered_courses ?? 0}/${status.total_courses}`
+    : ''
+  const skipped = status?.skipped_courses
+    ? ` · 跳过 ${status.skipped_courses}`
+    : ''
+  const mode = status?.scanning_all_courses
+    ? ' · 未找到课表课程过滤条件，正在全量扫描'
+    : ''
+  const partial = status?.partial ? ' · partial' : ''
+  const timeout = status?.timeout ? ' · timeout' : ''
+  return `超星作业：${state} · 拉取 ${count} 项${courseStats}${skipped}${mode}${partial}${timeout}${error}`
 }
 
 function jwxtSyncText(status: any): string {
@@ -123,7 +134,7 @@ export function SystemPage({ onAction }: Props) {
       let dashboard = res.dashboard
       let syncStatus = res.sync_status
       if (action === 'sync_homework' && syncStatus?.status === 'running') {
-        for (let attempt = 0; attempt < 30; attempt += 1) {
+        for (let attempt = 0; attempt < 180; attempt += 1) {
           await new Promise(resolve => setTimeout(resolve, 2000))
           dashboard = await getDashboard()
           const health = dashboard.sync_health?.chaoxing
@@ -134,6 +145,16 @@ export function SystemPage({ onAction }: Props) {
             mock_enabled: health?.mock_enabled,
             pulled_count: health?.pulled_count ?? health?.count,
             homework_count: dashboard.homework_count,
+            total_courses: health?.total_courses,
+            filtered_courses: health?.filtered_courses,
+            skipped_courses: health?.skipped_courses,
+            scanned_courses: health?.scanned_courses,
+            assignments_found: health?.assignments_found,
+            active_course_candidates: health?.active_course_candidates,
+            current_course_source: health?.current_course_source,
+            scanning_all_courses: health?.scanning_all_courses,
+            partial: health?.partial,
+            timeout: health?.timeout,
             last_sync_at: health?.last_sync,
           }
           if (

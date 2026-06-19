@@ -3074,6 +3074,54 @@ class TestSystemAction:
         assert data["sync_status"]["pulled_count"] == 0
         assert data["sync_status"]["homework_count"] == 0
 
+    def test_sync_homework_returns_filter_and_partial_status(
+        self,
+        client: TestClient,
+        app: FastAPI,
+    ):
+        completed = Event(
+            event_type=EventType.CONNECTOR_FETCH_COMPLETED,
+            aggregate_id="web_check_homework",
+            aggregate_type=AggregateType.HOMEWORK,
+            payload={
+                "source": "chaoxing",
+                "mock_enabled": False,
+                "pulled_count": 12,
+                "homework_count": 12,
+                "total_courses": 58,
+                "filtered_courses": 5,
+                "skipped_courses": 53,
+                "scanned_courses": 3,
+                "assignments_found": 12,
+                "active_course_candidates": 5,
+                "current_course_source": "temporal_blocks",
+                "scanning_all_courses": False,
+                "partial": True,
+                "timeout": True,
+            },
+        )
+        app.state.pipeline.run = AsyncMock(return_value=[completed])
+        cookie = self._login(client)
+
+        resp = client.post(
+            "/api/web/system/action",
+            json={"action": "sync_homework"},
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        status = resp.json()["sync_status"]
+        assert status["total_courses"] == 58
+        assert status["filtered_courses"] == 5
+        assert status["skipped_courses"] == 53
+        assert status["scanned_courses"] == 3
+        assert status["assignments_found"] == 12
+        assert status["active_course_candidates"] == 5
+        assert status["current_course_source"] == "temporal_blocks"
+        assert status["scanning_all_courses"] is False
+        assert status["partial"] is True
+        assert status["timeout"] is True
+
     def test_sync_all_publishes_all_refresh_triggers(self, client: TestClient, app: FastAPI):
         app.state.pipeline.run.reset_mock()
         app.state.pipeline.run.return_value = []

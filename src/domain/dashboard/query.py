@@ -518,6 +518,16 @@ def _sync_health(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "auto_login_attempted": item.get("auto_login_attempted", False),
                 "success": item.get("success"),
                 "duration_ms": item.get("duration_ms"),
+                "total_courses": item.get("total_courses"),
+                "filtered_courses": item.get("filtered_courses"),
+                "skipped_courses": item.get("skipped_courses"),
+                "scanned_courses": item.get("scanned_courses"),
+                "assignments_found": item.get("assignments_found"),
+                "active_course_candidates": item.get("active_course_candidates"),
+                "current_course_source": item.get("current_course_source"),
+                "scanning_all_courses": item.get("scanning_all_courses", False),
+                "partial": item.get("partial", False),
+                "timeout": item.get("timeout", False),
             }
 
     projection = _mapping(state, "temporal").get("projection", {})

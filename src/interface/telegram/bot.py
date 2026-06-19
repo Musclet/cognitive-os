@@ -2394,6 +2394,7 @@ class CognitiveOSBot:
             use_mock=self.settings.chaoxing_mock,
             event_bus=self.bus,
             course_registry=self.course_registry,
+            settings=self.settings,
         )
         jwxt = JwxtConnector(use_mock=self.settings.jwxt_mock, settings=self.settings)
         gcal = GoogleCalendarConnector(settings=self.settings)
@@ -2695,16 +2696,27 @@ class CognitiveOSBot:
                 return []
             action = event.payload.get("action", "")
             if action == "check_homework":
-                scope = None
-                if self.course_registry:
+                from src.domain.course_topology import current_course_candidates
+
+                scope, current_course_source = current_course_candidates(
+                    self.state_engine
+                )
+                if not scope and self.course_registry:
                     self.course_registry.compute_scores()
                     scope = self.course_registry.get_active_scope_names()
+                    if scope:
+                        current_course_source = "course_registry"
                 return [Event(
                     event_type=EventType.CONNECTOR_FETCH_REQUESTED,
                     aggregate_id=event.aggregate_id,
                     aggregate_type=AggregateType.HOMEWORK,
                     causation_id=event.event_id,
-                    payload={"source": "chaoxing", "query": "homework_list", "scope": scope},
+                    payload={
+                        "source": "chaoxing",
+                        "query": "homework_list",
+                        "scope": scope,
+                        "current_course_source": current_course_source,
+                    },
                 )]
             if action == "schedule_daily_sync":
                 logger.info("[SCHEDULED] schedule_daily_sync → triggering JWXT sync")

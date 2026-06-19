@@ -369,6 +369,16 @@ export interface SystemActionResponse {
     pulled_count?: number;
     temporal_blocks_count?: number;
     homework_count?: number;
+    total_courses?: number;
+    filtered_courses?: number;
+    skipped_courses?: number;
+    scanned_courses?: number;
+    assignments_found?: number;
+    active_course_candidates?: number;
+    current_course_source?: string;
+    scanning_all_courses?: boolean;
+    partial?: boolean;
+    timeout?: boolean;
     last_sync_at?: string;
   } | null;
 }
@@ -403,6 +413,16 @@ export interface WebStatus {
     mock_enabled?: boolean;
     pulled_count?: number;
     homework_count?: number;
+    total_courses?: number;
+    filtered_courses?: number;
+    skipped_courses?: number;
+    scanned_courses?: number;
+    assignments_found?: number;
+    active_course_candidates?: number;
+    current_course_source?: string;
+    scanning_all_courses?: boolean;
+    partial?: boolean;
+    timeout?: boolean;
   }>;
 }
 
