@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     chaoxing_password: str = ""
     chaoxing_mock: bool = True
     chaoxing_state_file: str = "data/chaoxing_state.json"
+    chaoxing_state_json: str = ""
     chaoxing_sync_timeout_seconds: int = 300
 
     jwxt_username: str = ""
@@ -252,3 +253,32 @@ class Settings(BaseSettings):
             _log.warning("jwxt cookies json from env is not valid JSON — skipping")
         except Exception:
             _log.exception("failed to write jwxt cookies from env")
+
+    def apply_env_chaoxing_state(self) -> None:
+        """Write Chaoxing state from env var to a file.
+
+        Render cannot host files; set CHAOXING_STATE_JSON as an environment
+        variable.  This method validates the JSON, writes it to disk, and
+        updates the path setting so the ChaoxingConnector works unchanged.
+
+        Never logs the state content.
+        """
+        import json as _json
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        if not self.chaoxing_state_json:
+            return
+        try:
+            parsed = _json.loads(self.chaoxing_state_json)
+            if not isinstance(parsed, dict):
+                _log.warning("chaoxing state json is not a JSON object — skipping")
+                return
+            dest = str(Path(self.data_dir) / "chaoxing_state_from_env.json")
+            Path(dest).write_text(self.chaoxing_state_json, encoding="utf-8")
+            self.chaoxing_state_file = dest
+            _log.info("chaoxing state loaded from env → %s", dest)
+        except _json.JSONDecodeError:
+            _log.warning("chaoxing state json from env is not valid JSON — skipping")
+        except Exception:
+            _log.exception("failed to write chaoxing state from env")
