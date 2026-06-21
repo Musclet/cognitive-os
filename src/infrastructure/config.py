@@ -126,9 +126,57 @@ class Settings(BaseSettings):
     # ── System ────────────────────────────────────────────────────────
     log_level: str = "INFO"
     data_dir: str = "data"
+    render_admin_import_enabled: bool = False
+    render_admin_import_token: str = ""
 
     def ensure_dirs(self) -> None:
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)
+
+    def normalize_data_paths(self) -> None:
+        """Re-base all file-path settings onto ``data_dir``.
+
+        When ``data_dir`` is not its default (``"data"``), rewrite every
+        default path that points under ``data/`` to point under the
+        configured ``data_dir`` instead.  Paths that were already
+        explicitly set via an environment variable are left untouched
+        (pydantic-settings overrides take precedence).
+        """
+        import json as _json
+        import logging as _logging
+        _log = _logging.getLogger(__name__)
+
+        if self.data_dir == "data":
+            return  # nothing to rebase
+
+        _prefix = "data/"
+        _replacements: list[tuple[str, str, str]] = []
+
+        for field_name in (
+            "snapshot_path",
+            "chaoxing_state_file",
+            "jwxt_cookies_path",
+            "google_calendar_credentials_path",
+            "google_calendar_token_path",
+        ):
+            current = str(getattr(self, field_name, ""))
+            if current.startswith(_prefix):
+                new = str(
+                    Path(self.data_dir) / current[len(_prefix):]
+                ).replace("\\", "/")
+                _replacements.append((field_name, current, new))
+
+        if self.database_url.startswith("sqlite+aiosqlite:///data/"):
+            rel = self.database_url[len("sqlite+aiosqlite:///data/"):]
+            base = self.data_dir.replace("\\", "/").strip("/")
+            new_db = "sqlite+aiosqlite:///%s/%s" % (
+                base,
+                rel.replace("\\", "/"),
+            )
+            _replacements.append(("database_url", self.database_url, new_db))
+
+        for field_name, old, new in _replacements:
+            setattr(self, field_name, new)
+            _log.info("data_dir rebase: %s → %s (via %s)", old, new, self.data_dir)
 
     def apply_env_google_credentials(self) -> None:
         """Write Google Calendar credentials/token from env vars to temp files.

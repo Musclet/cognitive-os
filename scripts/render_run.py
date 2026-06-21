@@ -48,6 +48,9 @@ async def _heartbeat_loop(pipeline: Pipeline) -> None:
 
 async def main():
     settings = Settings()
+    settings.normalize_data_paths()
+    settings.ensure_dirs()
+    logger.info("data dir: %s (exists=%s)", settings.data_dir, Path(settings.data_dir).is_dir())
     runtime = await build_runtime(settings, mode="render")
     bus = runtime.bus
     pipeline = runtime.pipeline
