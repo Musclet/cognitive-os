@@ -97,12 +97,13 @@ async def main():
         {"action": "check_homework"},
     )
 
-    # ── Auto-polling: JWXT schedule (every 12 hours) ─────────────────
-    scheduler.add_interval_job(
-        "auto_sync_schedule",
-        settings.schedule_sync_interval_hours * 60,
-        {"action": "schedule_daily_sync"},
-    )
+    # ── Optional extra JWXT polling. Daily sync times are registered below. ───────
+    if settings.schedule_sync_interval_hours > 0:
+        scheduler.add_interval_job(
+            "auto_sync_schedule",
+            settings.schedule_sync_interval_hours * 60,
+            {"action": "schedule_daily_sync"},
+        )
 
     # ── Auto-polling: Google Calendar (every 30 minutes, configurable) ─
     scheduler.add_interval_job(
