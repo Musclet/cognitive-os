@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from src.core.proposal import Proposal, ProposalStatus, TargetSystem
+from src.core.proposal import Proposal, ProposalStatus, ProposalType, TargetSystem
 from src.core.events import Event, EventType, AggregateType
 from src.core.temporal import TimeBlock
 from src.infrastructure.config import Settings
@@ -32,7 +32,20 @@ class GoogleCalendarExecutor:
         self.use_mock = use_mock
         self.settings = settings or Settings()
 
-    async def execute(self, proposal: Proposal) -> Event:
+    @staticmethod
+    def _failure(proposal_id: str, error_code: str) -> Event:
+        return Event(
+            event_type=EventType.EXECUTION_FAILED,
+            aggregate_id=proposal_id or "google_calendar",
+            aggregate_type=AggregateType.SYSTEM,
+            payload={
+                "proposal_id": proposal_id,
+                "error": error_code,
+                "error_code": error_code,
+            },
+        )
+
+    async def execute(self, proposal: Proposal | None) -> Event:
         """Execute an approved proposal.
 
         Args:
@@ -41,34 +54,34 @@ class GoogleCalendarExecutor:
         Returns:
             EXECUTION_COMPLETED or EXECUTION_FAILED event.
         """
-        if self.settings.google_calendar_write_requires_acceptance and proposal.status != ProposalStatus.ACCEPTED:
-            return Event(
-                event_type=EventType.EXECUTION_FAILED,
-                aggregate_id=proposal.proposal_id,
-                aggregate_type=AggregateType.SYSTEM,
-                payload={
-                    "proposal_id": proposal.proposal_id,
-                    "error": "proposal_not_accepted: proposal not accepted",
-                },
+        if proposal is None:
+            return self._failure("", "google_calendar_proposal_required")
+
+        if (
+            self.settings.google_calendar_write_requires_acceptance
+            and proposal.status != ProposalStatus.ACCEPTED
+        ):
+            return self._failure(
+                proposal.proposal_id,
+                "google_calendar_proposal_not_accepted",
             )
 
         if not self.use_mock and not self.settings.google_calendar_write_enabled:
-            return Event(
-                event_type=EventType.EXECUTION_FAILED,
-                aggregate_id=proposal.proposal_id,
-                aggregate_type=AggregateType.SYSTEM,
-                payload={
-                    "proposal_id": proposal.proposal_id,
-                    "error": "calendar_write_disabled",
-                },
+            return self._failure(
+                proposal.proposal_id,
+                "google_calendar_write_disabled",
             )
 
-        if proposal.target_system.value != "google_calendar":
-            return Event(
-                event_type=EventType.EXECUTION_FAILED,
-                aggregate_id=proposal.proposal_id,
-                aggregate_type=AggregateType.SYSTEM,
-                payload={"proposal_id": proposal.proposal_id, "error": "invalid_proposal_source"},
+        if proposal.target_system != TargetSystem.GOOGLE_CALENDAR:
+            return self._failure(
+                proposal.proposal_id,
+                "google_calendar_invalid_proposal_target",
+            )
+
+        if proposal.proposal_type != ProposalType.CREATE_CALENDAR_BLOCK:
+            return self._failure(
+                proposal.proposal_id,
+                "google_calendar_invalid_proposal_operation",
             )
 
         try:
@@ -83,8 +96,11 @@ class GoogleCalendarExecutor:
                     title, start, end
                 )
                 event_id = f"mock-event-{proposal.proposal_id}"
+                html_link = ""
             else:
-                event_id = await self._create_real_event(payload)
+                created = await self._create_real_event(payload)
+                event_id = created["event_id"]
+                html_link = created.get("html_link", "")
 
             return Event(
                 event_type=EventType.EXECUTION_COMPLETED,
@@ -96,22 +112,25 @@ class GoogleCalendarExecutor:
                     "title": title,
                     "start": start,
                     "end": end,
+                    "html_link": html_link,
                 },
             )
 
         except Exception as exc:
-            logger.error("Failed to execute proposal %s: %s", proposal.proposal_id, exc)
-            return Event(
-                event_type=EventType.EXECUTION_FAILED,
-                aggregate_id=proposal.proposal_id,
-                aggregate_type=AggregateType.SYSTEM,
-                payload={
-                    "proposal_id": proposal.proposal_id,
-                    "error": str(exc),
-                },
+            from src.connector.google_calendar.auth import GoogleCalendarAuthError
+
+            if isinstance(exc, GoogleCalendarAuthError):
+                return self._failure(proposal.proposal_id, exc.error_code)
+            logger.error(
+                "Google Calendar API write failed for proposal %s",
+                proposal.proposal_id,
+            )
+            return self._failure(
+                proposal.proposal_id,
+                "google_calendar_api_error",
             )
 
-    async def _create_real_event(self, payload: dict[str, Any]) -> str:
+    async def _create_real_event(self, payload: dict[str, Any]) -> dict[str, str]:
         """Real Google Calendar API call."""
         service = self._calendar_service()
         body = {
@@ -126,7 +145,10 @@ class GoogleCalendarExecutor:
             calendarId=calendar_id,
             body=body,
         ))
-        return event.get("id", "")
+        return {
+            "event_id": str(event.get("id", "")),
+            "html_link": str(event.get("htmlLink", "")),
+        }
 
     async def update_event(
         self,
@@ -152,7 +174,12 @@ class GoogleCalendarExecutor:
             return {"ok": True, "event_id": event_id}
 
         if not self.settings.google_calendar_write_enabled:
-            return {"ok": False, "error": "calendar_write_disabled", "event_id": event_id}
+            return {
+                "ok": False,
+                "error": "google_calendar_write_disabled",
+                "error_code": "google_calendar_write_disabled",
+                "event_id": event_id,
+            }
 
         body: dict[str, Any] = {}
         if payload.get("title"):
@@ -168,13 +195,28 @@ class GoogleCalendarExecutor:
         if payload.get("description") is not None:
             body["description"] = payload["description"]
 
-        service = self._calendar_service()
-        self._execute_with_retry(service.events().patch(
-            calendarId=self._validate_calendar_id(calendar_id),
-            eventId=event_id,
-            body=body,
-        ))
-        return {"ok": True, "event_id": event_id}
+        try:
+            service = self._calendar_service()
+            self._execute_with_retry(service.events().patch(
+                calendarId=self._validate_calendar_id(calendar_id),
+                eventId=event_id,
+                body=body,
+            ))
+            return {"ok": True, "event_id": event_id}
+        except Exception as exc:
+            from src.connector.google_calendar.auth import GoogleCalendarAuthError
+
+            error_code = (
+                exc.error_code
+                if isinstance(exc, GoogleCalendarAuthError)
+                else "google_calendar_api_error"
+            )
+            return {
+                "ok": False,
+                "error": error_code,
+                "error_code": error_code,
+                "event_id": event_id,
+            }
 
     async def delete_event(
         self,
@@ -201,14 +243,34 @@ class GoogleCalendarExecutor:
             return {"ok": True, "event_id": event_id}
 
         if not self.settings.google_calendar_write_enabled:
-            return {"ok": False, "error": "calendar_write_disabled", "event_id": event_id}
+            return {
+                "ok": False,
+                "error": "google_calendar_write_disabled",
+                "error_code": "google_calendar_write_disabled",
+                "event_id": event_id,
+            }
 
-        service = self._calendar_service()
-        self._execute_with_retry(service.events().delete(
-            calendarId=self._validate_calendar_id(calendar_id),
-            eventId=event_id,
-        ))
-        return {"ok": True, "event_id": event_id}
+        try:
+            service = self._calendar_service()
+            self._execute_with_retry(service.events().delete(
+                calendarId=self._validate_calendar_id(calendar_id),
+                eventId=event_id,
+            ))
+            return {"ok": True, "event_id": event_id}
+        except Exception as exc:
+            from src.connector.google_calendar.auth import GoogleCalendarAuthError
+
+            error_code = (
+                exc.error_code
+                if isinstance(exc, GoogleCalendarAuthError)
+                else "google_calendar_api_error"
+            )
+            return {
+                "ok": False,
+                "error": error_code,
+                "error_code": error_code,
+                "event_id": event_id,
+            }
 
     async def sync_schedule_blocks(
         self,
@@ -401,7 +463,10 @@ class GoogleCalendarExecutor:
             token_path=self.settings.google_calendar_token_path,
             scopes=["https://www.googleapis.com/auth/calendar"],
         )
-        creds, _ = auth.authenticate(trace_id=f"executor-{uuid4().hex[:8]}")
+        creds, _ = auth.authenticate(
+            trace_id=f"executor-{uuid4().hex[:8]}",
+            allow_interactive=False,
+        )
         return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
     def _validate_calendar_id(self, calendar_id: str) -> str:
