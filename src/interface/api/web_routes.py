@@ -1669,12 +1669,24 @@ def _execution_message(result: Event, title: str) -> tuple[bool, str]:
     error = str(result.payload.get("error", "calendar_write_failed"))
     if "calendar_mock_enabled" in error:
         return False, "Google Calendar 当前为模拟模式，日程没有写入。"
-    if "calendar_write_disabled" in error:
+    if "google_calendar_credentials_missing" in error:
+        return False, "Google Calendar OAuth credentials 文件不存在。"
+    if "google_calendar_token_missing" in error:
+        return False, "Google Calendar token 不存在，请先完成本地 OAuth 授权。"
+    if "google_calendar_token_invalid" in error:
+        return False, "Google Calendar token 无效，请重新完成本地 OAuth 授权。"
+    if "google_calendar_write_disabled" in error or "calendar_write_disabled" in error:
         return False, "日历写入未开启，提案已保留但没有操作 Google Calendar。"
-    if "proposal_not_accepted" in error or "not accepted" in error:
+    if "google_calendar_proposal_required" in error:
+        return False, "缺少日历写入提案，已拒绝写入。"
+    if "google_calendar_proposal_not_accepted" in error or "proposal_not_accepted" in error:
         return False, "提案尚未被确认，已拒绝写入日历。"
-    if "invalid_proposal_source" in error:
+    if "google_calendar_invalid_proposal_target" in error or "invalid_proposal_source" in error:
         return False, "提案来源不合法，已拒绝写入日历。"
+    if "google_calendar_invalid_proposal_operation" in error:
+        return False, "提案操作类型不允许写入 Google Calendar。"
+    if "google_calendar_api_error" in error:
+        return False, "Google Calendar API 写入失败。"
     return False, f"日历操作失败：{error[:80]}"
 
 
@@ -1705,6 +1717,11 @@ def _exec_result_to_event(
         payload={
             "proposal_id": proposal.proposal_id,
             "error": error or f"calendar_execution_failed_{fallback_event_label}",
+            "error_code": (
+                exec_result.get("error_code")
+                or error
+                or "google_calendar_api_error"
+            ),
         },
     )
 
