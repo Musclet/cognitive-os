@@ -65,9 +65,10 @@ class ChaoxingBrowser:
 
         logger.info("[BROWSER] starting Playwright...")
         self._playwright = await async_playwright().start()
-        launch_args = ["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"]
-        if self._headless:
-            launch_args.append("--disable-setuid-sandbox")
+        launch_args = [
+            "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage",
+            "--disable-setuid-sandbox", "--single-process",
+        ]
         self._browser = await self._playwright.chromium.launch(
             headless=self._headless,
             args=launch_args,
