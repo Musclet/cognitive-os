@@ -56,10 +56,24 @@ function jwxtSyncText(status: any): string {
   const state = STATUS_LABELS[status?.status] || status?.status || '未知'
   const pulledCount = status?.pulled_count ?? 0
   const blockCount = status?.temporal_blocks_count ?? 0
+  const refreshCodes = new Set([
+    'jwxt_cookie_expired',
+    'jwxt_login_failed',
+    'jwxt_login_failed_unknown',
+    'jwxt_auth_requires_user_action',
+    'jwxt_invalid_credentials',
+    'jwxt_invalid_username',
+    'jwxt_invalid_password',
+    'jwxt_account_locked',
+    'jwxt_password_expired',
+  ])
   const error = status?.error_code
     ? ` · ${status.error_code}${status.error ? `: ${status.error}` : ''}`
     : ''
-  return `教务课表：${state} · 拉取 ${pulledCount} 条 · 课程 ${blockCount} 条${error}`
+  const refreshHint = refreshCodes.has(status?.error_code)
+    ? ' · 请运行 python scripts/refresh_jwxt_state.py 后重试'
+    : ''
+  return `教务课表：${state} · 拉取 ${pulledCount} 条 · 课程 ${blockCount} 条${error}${refreshHint}`
 }
 
 export function SystemPage({ onAction }: Props) {

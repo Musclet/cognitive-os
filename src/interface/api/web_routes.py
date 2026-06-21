@@ -1667,6 +1667,8 @@ def _execution_message(result: Event, title: str) -> tuple[bool, str]:
         return True, f"日历操作成功：{title}"
 
     error = str(result.payload.get("error", "calendar_write_failed"))
+    if "calendar_mock_enabled" in error:
+        return False, "Google Calendar 当前为模拟模式，日程没有写入。"
     if "calendar_write_disabled" in error:
         return False, "日历写入未开启，提案已保留但没有操作 Google Calendar。"
     if "proposal_not_accepted" in error or "not accepted" in error:
@@ -3297,6 +3299,27 @@ async def web_proposal_decision(request: Request, body: dict):
             "decision": "reject",
         }
 
+    settings_obj = _settings(request)
+    if (
+        proposal.proposal_type == ProposalType.CREATE_CALENDAR_BLOCK
+        and proposal.target_system.value == "google_calendar"
+        and _setting_bool(settings_obj, "google_calendar_mock", True)
+    ):
+        return {
+            "ok": False,
+            "needs_followup": True,
+            "message": "Google Calendar 当前为模拟模式，日程没有写入。",
+            "proposal_id": proposal.proposal_id,
+            "decision": "accept",
+            "event": {
+                "proposal_id": proposal.proposal_id,
+                "error": "calendar_mock_enabled",
+                "error_code": "calendar_mock_enabled",
+            },
+            "error": "calendar_mock_enabled",
+            "error_code": "calendar_mock_enabled",
+        }
+
     proposal.status = ProposalStatus.ACCEPTED
     accepted_event = Event(
         event_type=EventType.EXECUTION_PROPOSAL_ACCEPTED,
@@ -3458,6 +3481,7 @@ async def web_proposal_decision(request: Request, body: dict):
         "decision": "accept",
         "event": result.payload,
         "error": result.payload.get("error") if not ok else None,
+        "error_code": result.payload.get("error_code") if not ok else None,
         "dashboard": dashboard,
     }
 

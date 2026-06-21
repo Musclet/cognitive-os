@@ -106,6 +106,7 @@ export function TimelinePage() {
   const [proposalState, setProposalState] = useState<ProposalState | null>(null)
   const [deciding, setDeciding] = useState<'accept' | 'reject' | null>(null)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [formStatus, setFormStatus] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
   const [loading, setLoading] = useState(false)
   const [editingEvent, setEditingEvent] = useState<EditingEvent | null>(null)
 
@@ -178,6 +179,7 @@ export function TimelinePage() {
     setFormNote('')
     setEditingEvent(null)
     setShowForm(false)
+    setFormStatus(null)
   }
 
   const shiftSelectedDate = (days: number) => {
@@ -203,6 +205,7 @@ export function TimelinePage() {
     if (!formTitle.trim() || !formDate || !formStart) return
 
     setLoading(true)
+    setFormStatus(null)
     try {
       const res = await postCalendarProposal({
         action: editingEvent ? 'update' : 'create',
@@ -231,17 +234,21 @@ export function TimelinePage() {
         })
         flashToast(res.conflicts?.length ? '已创建提案（有冲突）' : '已创建提案，请确认写入日历')
       } else {
+        const message = res.message || '创建提案失败'
+        setFormStatus({ type: 'err', text: message })
         announceWebAction({
           ok: false,
-          message: res.message || '创建提案失败',
+          message,
           action: editingEvent ? 'calendar_update_proposal' : 'calendar_create_proposal',
           action_type: 'timeline_calendar_proposal',
           can_undo: false,
         })
-        flashToast(res.message || '创建提案失败')
+        flashToast(message)
       }
     } catch (err: any) {
-      flashToast('创建提案异常')
+      const message = err?.detail || err?.message || '创建提案异常'
+      setFormStatus({ type: 'err', text: message })
+      flashToast(message)
     } finally {
       setLoading(false)
     }
@@ -352,7 +359,11 @@ export function TimelinePage() {
     setDeciding(decision)
     try {
       const res = await postProposalDecision(proposalState.proposal, decision)
-      flashToast(res.message)
+      const message = !res.ok && res.error_code && !res.message.includes(res.error_code)
+        ? `${res.message} · ${res.error_code}`
+        : res.message
+      flashToast(message)
+      setFormStatus({ type: res.ok ? 'ok' : 'err', text: message })
       if (res.ok || decision === 'reject') {
         setProposalState(null)
       }
@@ -367,8 +378,10 @@ export function TimelinePage() {
         refreshDashboard()
         fetchData()
       }
-    } catch {
-      flashToast('提案处理异常')
+    } catch (err: any) {
+      const message = err?.detail || err?.message || '提案处理异常'
+      setFormStatus({ type: 'err', text: message })
+      flashToast(message)
     } finally {
       setDeciding(null)
     }
@@ -611,7 +624,10 @@ export function TimelinePage() {
           <p>切换日期时，日程会沿时间方向滑入。</p>
         </div>
         <button
-          className="timeline-tab"
+          type="button"
+          className={`timeline-tab timeline-create-button ${showForm ? 'active' : ''}`}
+          aria-expanded={showForm}
+          aria-controls="timeline-create-form"
           onClick={() => {
             if (showForm) resetForm()
             else {
@@ -619,7 +635,6 @@ export function TimelinePage() {
               setShowForm(true)
             }
           }}
-          style={{ background: showForm ? 'var(--accent-berry)' : 'transparent', color: showForm ? '#fff' : undefined }}
         >
           {showForm ? '关闭' : '+ 新建日程'}
         </button>
@@ -634,10 +649,15 @@ export function TimelinePage() {
 
       {/* Proposal card with conflict warning */}
       {renderProposalCard()}
+      {formStatus && !showForm && (
+        <div className={`timeline-form-status ${formStatus.type}`} role="status" aria-live="polite">
+          {formStatus.text}
+        </div>
+      )}
 
       {/* Create event form */}
       {showForm && (
-        <form onSubmit={handleFormProposal} style={{
+        <form id="timeline-create-form" className="timeline-create-form" onSubmit={handleFormProposal} style={{
           background: 'var(--bg-card)', borderRadius: 'var(--radius)',
           padding: 16, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 10,
         }}>
@@ -645,10 +665,19 @@ export function TimelinePage() {
             {editingEvent ? '更新日历事件' : '新建日历事件'}
           </div>
           <input required className="tl-form-input" placeholder="标题 *" value={formTitle} onChange={e => setFormTitle(e.target.value)} />
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input required type="date" className="tl-form-input" style={{ flex: 1 }} value={formDate} onChange={e => setFormDate(e.target.value)} />
-            <input required type="time" className="tl-form-input" style={{ width: 120 }} value={formStart} onChange={e => setFormStart(e.target.value)} />
-            <input type="time" className="tl-form-input" style={{ width: 120 }} value={formEnd} onChange={e => setFormEnd(e.target.value)} placeholder="结束" />
+          <div className="timeline-form-date-row">
+            <label className="timeline-form-field timeline-form-date-field">
+              <span>日期</span>
+              <input required type="date" className="tl-form-input timeline-calendar-input" value={formDate} onChange={e => setFormDate(e.target.value)} />
+            </label>
+            <label className="timeline-form-field">
+              <span>开始</span>
+              <input required type="time" className="tl-form-input timeline-time-input" value={formStart} onChange={e => setFormStart(e.target.value)} />
+            </label>
+            <label className="timeline-form-field">
+              <span>结束</span>
+              <input type="time" className="tl-form-input timeline-time-input" value={formEnd} onChange={e => setFormEnd(e.target.value)} />
+            </label>
           </div>
           <input className="tl-form-input" placeholder="地点" value={formLocation} onChange={e => setFormLocation(e.target.value)} />
           <input className="tl-form-input" placeholder="备注" value={formNote} onChange={e => setFormNote(e.target.value)} />
@@ -658,6 +687,11 @@ export function TimelinePage() {
             </button>
             <button type="button" className="cmd-mini-btn" onClick={resetForm}>取消</button>
           </div>
+          {formStatus && (
+            <div className={`timeline-form-status ${formStatus.type}`} role="status" aria-live="polite">
+              {formStatus.text}
+            </div>
+          )}
         </form>
       )}
 
@@ -667,6 +701,7 @@ export function TimelinePage() {
         <input
           className="tl-form-input timeline-date-input"
           type="date"
+          aria-label="选择查看日期"
           value={selectedDate}
           onChange={e => jumpToDate(e.target.value || todayStr())}
         />

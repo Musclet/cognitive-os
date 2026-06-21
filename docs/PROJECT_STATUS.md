@@ -1,18 +1,19 @@
 # Project Status
 
-Last audited: 2026-06-18
-Audit base: `fd9c5b2`
-Working branch: `master`
+Last audited: 2026-06-21
+Audit base: `40cc986`
+Working branch: `fix/web-ui-usability-and-sync-regressions`
 
 ## Verified Baseline
 
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `990 passed, 145 warnings` |
+| Python tests | `1089 passed, 156 warnings` |
+| Focused JWXT/schedule/calendar/dashboard/sync tests | `460 passed, 629 deselected` |
 | Snapshot/replay determinism | PASS |
 | Web TypeScript/Vite build | PASS |
-| Critical Ruff (`E9,F821` in `src`) | PASS |
+| Critical Ruff (`E9,F821` in `src scripts`) | FAIL: 5 pre-existing `course_registry` F821 findings in `scripts/run_step4_connector.py` |
 | Full Ruff | 228 pre-existing findings at audit start |
 | npm install audit | 2 findings: 1 moderate, 1 high |
 
@@ -26,6 +27,12 @@ batch.
 
 ## Completed In This Branch
 
+- Fixed new-schedule button, date input, review stepper, and workout ring
+  usability regressions in the refreshed Web UI.
+- Stopped Google Calendar mock mode from reporting a non-persistent new
+  schedule as a successful write.
+- Restored the existing interactive JWXT cookie refresh script and surfaced
+  exact sync error codes with the refresh command in the System page.
 - Fixed Windows shortcut interpreter selection and verified the desktop
   shortcut starts both backend and Web UI.
 - Made the launcher prefer the real Python installation used by the shortcut.

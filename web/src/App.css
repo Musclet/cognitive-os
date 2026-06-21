@@ -3504,3 +3504,176 @@ button:active {
     transform: none !important;
   }
 }
+
+/* ── Usability regression fixes ────────────────────────────────── */
+.timeline-page-head .timeline-create-button {
+  min-height: 44px;
+  padding-inline: 18px;
+  background: #fff;
+  background-image: none;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.timeline-page-head .timeline-create-button:hover:not(.active) {
+  background: rgba(217,59,49,.08);
+  border-color: var(--accent-pink);
+  color: var(--text-primary);
+}
+.timeline-page-head .timeline-create-button:focus-visible,
+.timeline-tab:focus-visible,
+.tl-form-input:focus-visible {
+  outline: 3px solid rgba(217,59,49,.22);
+  outline-offset: 2px;
+}
+.timeline-page-head .timeline-create-button:disabled {
+  background: var(--bg-muted);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+.timeline-create-form {
+  border: 1px solid var(--border);
+}
+.timeline-form-date-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(120px, auto) minmax(120px, auto);
+  gap: 10px;
+}
+.timeline-form-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+}
+.timeline-form-field > span {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.timeline-calendar-input,
+.timeline-time-input,
+.timeline-date-input {
+  min-height: 44px;
+  color-scheme: light;
+  background: #fff;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 650;
+}
+.timeline-calendar-input:hover,
+.timeline-time-input:hover,
+.timeline-date-input:hover {
+  border-color: var(--border-strong);
+  background: #fff;
+}
+.timeline-calendar-input::-webkit-calendar-picker-indicator,
+.timeline-date-input::-webkit-calendar-picker-indicator,
+.timeline-time-input::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: .78;
+}
+.timeline-form-status {
+  border-radius: 10px;
+  margin-bottom: 12px;
+  padding: 9px 11px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.timeline-create-form .timeline-form-status {
+  margin-bottom: 0;
+}
+.timeline-form-status.ok {
+  background: rgba(75,181,125,.12);
+  color: #276a49;
+}
+.timeline-form-status.err {
+  background: rgba(201,47,38,.09);
+  color: #8f241d;
+}
+
+.review-score-field {
+  gap: 7px;
+}
+.review-stepper {
+  display: grid;
+  grid-template-columns: 42px minmax(48px, 1fr) 42px;
+  min-height: 44px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+.review-stepper:focus-within {
+  border-color: var(--accent-berry);
+  box-shadow: 0 0 0 3px rgba(201,47,38,.08);
+}
+.review-form .review-stepper input {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: #fff;
+  padding: 0 4px;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 750;
+  text-align: center;
+  appearance: textfield;
+  box-shadow: none;
+}
+.review-form .review-stepper input:focus {
+  border: 0;
+  box-shadow: none;
+}
+.review-form .review-stepper input::-webkit-inner-spin-button,
+.review-form .review-stepper input::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+.review-stepper-btn {
+  min-width: 42px;
+  min-height: 42px;
+  border: 0;
+  background: #ece9e2;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.review-stepper-btn:hover:not(:disabled) {
+  background: #ddd9cf;
+}
+.review-stepper-btn:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid rgba(61,85,73,.25);
+  outline-offset: -3px;
+}
+.review-stepper-btn:disabled {
+  color: var(--text-dim);
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.pointer-aura.is-active {
+  width: 36px;
+  height: 36px;
+  background: rgba(217,59,49,.07);
+}
+
+@media (max-width: 900px) {
+  .timeline-form-date-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .timeline-form-date-field {
+    grid-column: 1 / -1;
+  }
+  .timeline-calendar-input,
+  .timeline-time-input,
+  .timeline-date-input {
+    width: 100%;
+    min-width: 0;
+  }
+  .review-score-row {
+    grid-template-columns: 1fr;
+  }
+}

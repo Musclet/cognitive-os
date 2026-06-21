@@ -976,8 +976,8 @@ class TestActionGateway:
         assert EventType.EXECUTION_FAILED in [e.event_type for e in events]
         assert EventType.CALENDAR_EVENT_CREATED not in [e.event_type for e in events]
 
-    def test_proposal_accept_mock_success_uses_executor_path(self, client: TestClient, app: FastAPI):
-        """Accepting with mock writes enabled records canonical execution events."""
+    def test_proposal_accept_mock_reports_not_persisted(self, client: TestClient, app: FastAPI):
+        """Mock calendar mode must not claim a persisted calendar event."""
         from src.core.proposal import Proposal, ProposalType, TargetSystem
         from src.core.events import EventType
 
@@ -1006,16 +1006,11 @@ class TestActionGateway:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert data["ok"] is True
-        assert data["needs_followup"] is False
-        assert data["event"]["event_id"].startswith("mock-event-")
-        events = [call.args[0] for call in app.state.pipeline.run.call_args_list]
-        event_types = [e.event_type for e in events]
-        assert EventType.EXECUTION_PROPOSAL_ACCEPTED in event_types
-        assert EventType.USER_ACCEPTED_PROPOSAL in event_types
-        assert EventType.EXECUTION_REQUESTED in event_types
-        assert EventType.CALENDAR_EVENT_CREATED in event_types
-        assert EventType.EXECUTION_COMPLETED in event_types
+        assert data["ok"] is False
+        assert data["needs_followup"] is True
+        assert data["error_code"] == "calendar_mock_enabled"
+        assert data["event"]["error"] == "calendar_mock_enabled"
+        app.state.pipeline.run.assert_not_called()
 
     def test_finance_transaction_includes_action_id(self, client: TestClient, app: FastAPI):
         """Finance transaction response includes action_id when events produced."""
@@ -3331,7 +3326,7 @@ class TestProposalDecisionFromStateEngine:
         settings.web_ui_session_days = 7
         settings.obsidian_vault_path = ""
         settings.telegram_allowed_users = [123]
-        settings.google_calendar_mock = True
+        settings.google_calendar_mock = False
         settings.google_calendar_write_enabled = True
         settings.google_calendar_write_requires_acceptance = True
         app.state.settings = settings
@@ -3357,7 +3352,20 @@ class TestProposalDecisionFromStateEngine:
 
         # Mock pipeline
         pipeline = MagicMock()
-        pipeline.run = AsyncMock(return_value=[])
+        pipeline.run = AsyncMock(return_value=[
+            Event(
+                event_type=EventType.EXECUTION_COMPLETED,
+                aggregate_id=proposal.proposal_id,
+                aggregate_type=AggregateType.SYSTEM,
+                payload={
+                    "proposal_id": proposal.proposal_id,
+                    "event_id": "test-event",
+                    "title": "Test",
+                    "start": "2026-06-06T12:00:00+08:00",
+                    "end": "2026-06-06T13:00:00+08:00",
+                },
+            )
+        ])
         app.state.pipeline = pipeline
 
         return app
