@@ -4,7 +4,7 @@ services:
     runtime: python
     repo: https://github.com/Musclet/cognitive-os
     branch: master
-    buildCommand: pip install -e . && cd web && npm install && npm run build && cd ..
+    buildCommand: pip install -e . && python -m playwright install chromium && cd web && npm install && npm run build && cd ..
     startCommand: python scripts/render_run.py
     plan: free
     disk:
