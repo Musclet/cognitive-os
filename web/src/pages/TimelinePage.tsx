@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { getTimeline, postCalendarProposal, postProposalDecision, TimelineData, TimelineEvent, CalendarProposalResponse } from '../api'
 import { announceWebAction, refreshDashboard } from '../events'
 
@@ -98,6 +98,10 @@ export function TimelinePage() {
   const [selectedDate, setSelectedDate] = useState(todayStr())
   const [data, setData] = useState<TimelineData | null>(null)
   const [weekData, setWeekData] = useState<DayGroup[]>([])
+  const [dataLoading, setDataLoading] = useState(false)
+  const [timelineDirection, setTimelineDirection] = useState<'next' | 'prev'>('next')
+  const [timelineMotionKey, setTimelineMotionKey] = useState(0)
+  const fetchRequestRef = useRef(0)
   const [showForm, setShowForm] = useState(false)
   const [proposalState, setProposalState] = useState<ProposalState | null>(null)
   const [deciding, setDeciding] = useState<'accept' | 'reject' | null>(null)
@@ -118,12 +122,16 @@ export function TimelinePage() {
     setTimeout(() => setToastMsg(null), 3000)
   }
 
-  const fetchData = useCallback(() => {
+  const fetchData = useCallback(async () => {
+    const requestId = ++fetchRequestRef.current
+    setDataLoading(true)
     const baseDate = parseDateInput(selectedDate)
-    if (tab === 'week') {
-      const days: Date[] = []
-      for (let i = 0; i < 7; i++) days.push(addDays(baseDate, i))
-      Promise.all(days.map(d => getTimeline(fmtDate(d)).catch(() => null))).then(results => {
+    try {
+      if (tab === 'week') {
+        const days: Date[] = []
+        for (let i = 0; i < 7; i++) days.push(addDays(baseDate, i))
+        const results = await Promise.all(days.map(d => getTimeline(fmtDate(d)).catch(() => null)))
+        if (requestId !== fetchRequestRef.current) return
         const groups: DayGroup[] = []
         for (let i = 0; i < 7; i++) {
           const td = results[i]
@@ -135,9 +143,16 @@ export function TimelinePage() {
         }
         setWeekData(groups)
         setData(results[0])
-      })
-    } else {
-      getTimeline(selectedDate).then(setData).catch(() => {})
+      } else {
+        const result = await getTimeline(selectedDate)
+        if (requestId !== fetchRequestRef.current) return
+        setData(result)
+      }
+      setTimelineMotionKey(value => value + 1)
+    } catch {
+      // Keep the last successful view visible when a refresh fails.
+    } finally {
+      if (requestId === fetchRequestRef.current) setDataLoading(false)
     }
   }, [tab, selectedDate])
 
@@ -167,11 +182,17 @@ export function TimelinePage() {
 
   const shiftSelectedDate = (days: number) => {
     const shifted = fmtDate(addDays(parseDateInput(selectedDate), days))
+    setTimelineDirection(days >= 0 ? 'next' : 'prev')
     setSelectedDate(shifted)
     setTab('day')
   }
 
   const jumpToDate = (dateStr: string, nextTab: 'day' | 'week' = 'day') => {
+    if (nextTab !== tab) {
+      setTimelineDirection(nextTab === 'week' ? 'next' : 'prev')
+    } else {
+      setTimelineDirection(dateStr >= selectedDate ? 'next' : 'prev')
+    }
     setSelectedDate(dateStr)
     setTab(nextTab)
     if (!editingEvent) setFormDate(dateStr)
@@ -542,7 +563,11 @@ export function TimelinePage() {
           </div>
         )}
         {evs.map((ev: TimelineEvent, i: number) => (
-          <div className="timeline-item" key={`${dateLabelStr}-${i}`}>
+          <div
+            className="timeline-item data-birth"
+            key={`${dateLabelStr}-${ev.event_id || ev.title}-${ev.start || ev.deadline || i}`}
+            style={{ animationDelay: `${Math.min(i, 8) * 65}ms` }}
+          >
             <div className={`timeline-dot ${ev.source}`} />
             <div className="timeline-body">
               <div className="tl-title">{ev.title}</div>
@@ -578,9 +603,13 @@ export function TimelinePage() {
   }
 
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600 }}>时间线</h2>
+    <div className="timeline-page">
+      <div className="timeline-page-head">
+        <div>
+          <div className="section-eyebrow">TIME / 时间</div>
+          <h1>让一天按节奏展开</h1>
+          <p>切换日期时，日程会沿时间方向滑入。</p>
+        </div>
         <button
           className="timeline-tab"
           onClick={() => {
@@ -647,34 +676,48 @@ export function TimelinePage() {
       <div className="timeline-tabs">
         <button className={`timeline-tab ${tab === 'day' && selectedDate === todayStr() ? 'active' : ''}`} onClick={() => jumpToDate(todayStr())}>今天</button>
         <button className={`timeline-tab ${tab === 'day' && selectedDate === fmtDate(addDays(new Date(), 1)) ? 'active' : ''}`} onClick={() => jumpToDate(fmtDate(addDays(new Date(), 1)))}>明天</button>
-        <button className={`timeline-tab ${tab === 'week' ? 'active' : ''}`} onClick={() => setTab('week')}>7天</button>
+        <button className={`timeline-tab ${tab === 'week' ? 'active' : ''}`} onClick={() => jumpToDate(selectedDate, 'week')}>7天</button>
       </div>
 
-      {tab === 'week' ? (
-        <div className="timeline">
-          {weekData.map((day, di) => (
-            <div key={day.date}>
-              {renderEvents(day.events, true, di === 0 ? `今天 ${day.date}` : `${day.label} ${day.date}`)}
+      <div
+        className="timeline-data-viewport"
+        data-loading={dataLoading}
+        data-direction={timelineDirection}
+      >
+        <div
+          className="timeline-data-stage"
+          data-direction={timelineDirection}
+          key={`${tab}-${selectedDate}-${timelineMotionKey}`}
+        >
+          {tab === 'week' ? (
+            <div className="timeline">
+              {weekData.map((day, di) => (
+                <section className="timeline-day-group data-birth" key={day.date} style={{ animationDelay: `${di * 55}ms` }}>
+                  {renderEvents(day.events, true, di === 0 ? `今天 ${day.date}` : `${day.label} ${day.date}`)}
+                </section>
+              ))}
+              {weekData.every(d => d.events.length === 0) && (
+                <div className="timeline-empty data-birth">
+                  本周暂无事件
+                </div>
+              )}
             </div>
-          ))}
-          {weekData.every(d => d.events.length === 0) && (
-            <div style={{ color: 'var(--text-dim)', textAlign: 'center', padding: 40 }}>
-              本周暂无事件
-            </div>
+          ) : (
+            <>
+              {data && (
+                <div className="timeline-count data-birth">
+                  <span>{selectedDate}</span>
+                  <strong>{events.length}</strong>
+                  <small>个事件</small>
+                </div>
+              )}
+              <div className="timeline">
+                {renderEvents(events)}
+              </div>
+            </>
           )}
         </div>
-      ) : (
-        <>
-          {data && (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)', marginBottom: 12 }}>
-              {selectedDate} · {events.length} 个事件
-            </div>
-          )}
-          <div className="timeline">
-            {renderEvents(events)}
-          </div>
-        </>
-      )}
+      </div>
     </div>
   )
 }

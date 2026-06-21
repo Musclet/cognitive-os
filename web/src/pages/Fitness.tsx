@@ -7,9 +7,69 @@ import {
 } from '../api'
 import { Ring } from '../components/Ring'
 
+type WorkoutKind = 'upper' | 'lower' | 'rest'
+type SwitchDirection = 'next' | 'prev'
+type TransitionPhase = 'idle' | 'exit' | 'enter'
+
+function workoutKind(day?: string): WorkoutKind {
+  const normalized = (day || '').toLowerCase()
+  if (normalized.includes('lower')) return 'lower'
+  if (normalized.includes('rest')) return 'rest'
+  return 'upper'
+}
+
+function workoutLabel(day: string): string {
+  const kind = workoutKind(day)
+  if (kind === 'lower') return '下肢力量'
+  if (kind === 'rest') return '恢复与重置'
+  return '上肢力量'
+}
+
+function wait(ms: number) {
+  return new Promise(resolve => window.setTimeout(resolve, ms))
+}
+
+function WorkoutMotionFigure({ kind, performing }: { kind: WorkoutKind; performing: boolean }) {
+  return (
+    <div className={`fit-motion-figure ${kind} ${performing ? 'is-performing' : ''}`} aria-hidden="true">
+      <svg viewBox="0 0 240 210" role="img">
+        <g className="fit-motion-floor">
+          <path d="M28 186H212" />
+          <path d="M72 194H168" />
+        </g>
+        <g className="fit-athlete">
+          <circle className="fit-athlete-head" cx="120" cy="58" r="16" />
+          <path className="fit-athlete-torso" d="M120 77V132" />
+          <g className="fit-athlete-arms">
+            <path d="M120 88L88 109L70 87" />
+            <path d="M120 88L152 109L170 87" />
+          </g>
+          <g className="fit-athlete-legs">
+            <path d="M120 132L91 178" />
+            <path d="M120 132L149 178" />
+          </g>
+        </g>
+        <g className="fit-barbell">
+          <path d="M58 87H182" />
+          <path d="M52 73V101M58 70V104M182 70V104M188 73V101" />
+        </g>
+        <g className="fit-rest-pulse">
+          <circle cx="120" cy="108" r="47" />
+          <circle cx="120" cy="108" r="66" />
+        </g>
+      </svg>
+    </div>
+  )
+}
+
 export function Fitness() {
   const [session, setSession] = useState<WorkoutSession | null>(null)
   const [saveStatus, setSaveStatus] = useState('')
+  const [switchingDay, setSwitchingDay] = useState<string | null>(null)
+  const [switchDirection, setSwitchDirection] = useState<SwitchDirection>('next')
+  const [transitionPhase, setTransitionPhase] = useState<TransitionPhase>('idle')
+  const [sessionMotionKey, setSessionMotionKey] = useState(0)
+  const transitionTimerRef = useRef<ReturnType<typeof setTimeout>>()
 
   // Exercise editing state
   const [editEx, setEditEx] = useState<number | null>(null)
@@ -26,7 +86,10 @@ export function Fitness() {
   // Rest timer
   const [timerRemaining, setTimerRemaining] = useState<number | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval>>()
-  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current) }, [])
+  useEffect(() => () => {
+    if (timerRef.current) clearInterval(timerRef.current)
+    if (transitionTimerRef.current) clearTimeout(transitionTimerRef.current)
+  }, [])
 
   const load = useCallback(() => {
     getWorkoutSession().then(setSession).catch(() => {})
@@ -40,23 +103,42 @@ export function Fitness() {
 
   const s = session.session
   const pct = s && s.total_sets > 0 ? Math.round((s.completed_sets / s.total_sets) * 100) : 0
+  const visibleDay = switchingDay || s?.training_day || session.recommended_day || session.planned_day
+  const visibleKind = workoutKind(visibleDay)
+  const availableDays = session.available_days || []
 
   const handleSelectDay = async (day: string) => {
-    setSaveStatus('选择中...')
+    if (switchingDay || day === s?.training_day) return
+    const currentIndex = Math.max(0, availableDays.indexOf(s?.training_day))
+    const nextIndex = Math.max(0, availableDays.indexOf(day))
+    const direction: SwitchDirection = nextIndex >= currentIndex ? 'next' : 'prev'
+    setSwitchDirection(direction)
+    setSwitchingDay(day)
+    setTransitionPhase('exit')
+    setSaveStatus(`正在加载 ${day}...`)
+    const startedAt = Date.now()
+
     try {
-      const result = await selectWorkoutDay(session.date, day, false)
-      setSession(result)
-      setSaveStatus('已就绪')
-    } catch (err: any) {
-      if (err.status === 409) {
-        if (window.confirm('今天已有训练记录。覆盖并切换？')) {
-          const result = await selectWorkoutDay(session.date, day, true)
-          setSession(result)
-          setSaveStatus('已切换')
-        }
-      } else {
-        setSaveStatus('错误: ' + (err.detail || err.message))
+      let result: WorkoutSession
+      try {
+        result = await selectWorkoutDay(session.date, day, false)
+      } catch (err: any) {
+        if (err.status !== 409 || !window.confirm('今天已有训练记录。覆盖并切换？')) throw err
+        result = await selectWorkoutDay(session.date, day, true)
       }
+      await wait(Math.max(0, 680 - (Date.now() - startedAt)))
+      setSession(result)
+      setSessionMotionKey(value => value + 1)
+      setTransitionPhase('enter')
+      setSaveStatus('已就绪')
+      transitionTimerRef.current = setTimeout(() => {
+        setTransitionPhase('idle')
+        setSwitchingDay(null)
+      }, 760)
+    } catch (err: any) {
+      setTransitionPhase('idle')
+      setSwitchingDay(null)
+      setSaveStatus(err.status === 409 ? '已取消切换' : '错误: ' + (err.detail || err.message))
     }
   }
 
@@ -156,59 +238,124 @@ export function Fitness() {
   }
 
   return (
-    <div>
+    <div className="fitness-page">
       <div className="fit-header">
         <div>
-          <h2 style={{ fontSize: 18, fontWeight: 600 }}>健身</h2>
-          <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>{session.date} {session.weekday}</div>
+          <div className="section-eyebrow">FITNESS / 训练</div>
+          <h1>今天，身体负责回答</h1>
+          <div className="fit-header-date">{session.date} · {session.weekday}</div>
         </div>
-        <Ring pct={pct} size={56} />
+        <div className="fit-progress">
+          <Ring pct={pct} size={74} strokeWidth={4} />
+          <div>
+            <strong>{pct}%</strong>
+            <span>今日完成度</span>
+          </div>
+        </div>
       </div>
 
-      <div className="fit-day-select">
-        {(session.available_days || []).map((day: string) => (
+      <div className="fit-template-head">
+        <div>
+          <span>训练模板</span>
+          <strong>选择今天的身体主题</strong>
+        </div>
+        <small>悬停预览 · 点击切换</small>
+      </div>
+
+      <div className="fit-day-select" role="list" aria-label="训练模板">
+        {availableDays.map((day: string, index: number) => (
           <button
             key={day}
-            className={`fit-day-btn ${s?.training_day === day ? 'active' : ''}`}
+            className={`fit-day-btn ${s?.training_day === day ? 'active' : ''} ${switchingDay === day ? 'loading' : ''}`}
             onClick={() => handleSelectDay(day)}
+            disabled={Boolean(switchingDay)}
+            aria-pressed={s?.training_day === day}
+            data-kind={workoutKind(day)}
           >
-            {day}
+            <span className="fit-day-index">{String(index + 1).padStart(2, '0')}</span>
+            <span className="fit-day-copy">
+              <strong>{day}</strong>
+              <small>{workoutLabel(day)}</small>
+            </span>
+            <span className="fit-day-arrow" aria-hidden="true">↗</span>
           </button>
         ))}
       </div>
 
-      {s?.focus && (
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>
-          {s.training_day} · {s.focus} · {s.completed_sets}/{s.total_sets} 组
+      <section
+        className={`fit-motion-stage ${transitionPhase !== 'idle' ? 'is-performing' : ''}`}
+        data-kind={visibleKind}
+      >
+        <div className="fit-motion-copy">
+          <span>{switchingDay ? 'LOADING PROGRAM' : 'CURRENT PROGRAM'}</span>
+          <strong>{visibleDay || '选择训练模板'}</strong>
+          <p>
+            {switchingDay
+              ? `${workoutLabel(switchingDay)}正在展开`
+              : s?.focus || workoutLabel(visibleDay || '')}
+          </p>
         </div>
-      )}
+        <WorkoutMotionFigure kind={visibleKind} performing={transitionPhase !== 'idle'} />
+        <div className="fit-motion-status">
+          <span>{transitionPhase === 'exit' ? '蓄力' : transitionPhase === 'enter' ? '动作已载入' : 'READY'}</span>
+          <i />
+        </div>
+      </section>
 
-      {/* ── Rest Timer ────────────────────────────────────────── */}
-      <div className="fit-timer">
-        <div className="fit-timer-presets">
-          {[60, 90, 120].map(sec => (
-            <button key={sec} className={`fit-timer-btn${timerRemaining !== null && timerRemaining > 0 ? '' : ''}`}
-              onClick={() => startTimer(sec)} disabled={timerRemaining !== null && timerRemaining > 0}>
-              {sec}s
-            </button>
-          ))}
-        </div>
-        <div className="fit-timer-display">
-          {timerRemaining !== null ? formatTimer(timerRemaining) : '—'}
-        </div>
-        <div className="fit-timer-actions">
-          {timerRemaining !== null && timerRemaining > 0 ? (
-            <button className="fit-timer-btn" onClick={stopTimer}>停止</button>
-          ) : (
-            <button className="fit-timer-btn" onClick={() => startTimer(90)} disabled={false}>开始</button>
+      <div
+        className="fit-session-viewport"
+        data-phase={transitionPhase}
+        data-direction={switchDirection}
+      >
+        <div
+          className="fit-session-content"
+          key={`${s?.training_day || 'empty'}-${sessionMotionKey}`}
+          data-phase={transitionPhase}
+          data-direction={switchDirection}
+        >
+          {s?.focus && (
+            <div className="fit-session-summary data-birth">
+              <span>{s.training_day}</span>
+              <strong>{s.focus}</strong>
+              <small>{s.completed_sets}/{s.total_sets} 组完成</small>
+            </div>
           )}
-          {timerRemaining !== null && <button className="fit-timer-btn" onClick={stopTimer}>重置</button>}
-        </div>
-      </div>
 
-      {/* ── Exercises ─────────────────────────────────────────── */}
-      {s?.exercises?.map((ex: any, ei: number) => (
-        <div className="card exercise-card" key={ei}>
+          {/* ── Rest Timer ────────────────────────────────────── */}
+          <div className="fit-timer data-birth">
+            <div className="fit-timer-label">
+              <span>REST TIMER</span>
+              <strong>组间恢复</strong>
+            </div>
+            <div className="fit-timer-presets">
+              {[60, 90, 120].map(sec => (
+                <button key={sec} className="fit-timer-btn"
+                  onClick={() => startTimer(sec)} disabled={timerRemaining !== null && timerRemaining > 0}>
+                  {sec}s
+                </button>
+              ))}
+            </div>
+            <div className="fit-timer-display">
+              {timerRemaining !== null ? formatTimer(timerRemaining) : '1:30'}
+            </div>
+            <div className="fit-timer-actions">
+              {timerRemaining !== null && timerRemaining > 0 ? (
+                <button className="fit-timer-btn primary" onClick={stopTimer}>停止</button>
+              ) : (
+                <button className="fit-timer-btn primary" onClick={() => startTimer(90)}>开始</button>
+              )}
+              {timerRemaining !== null && <button className="fit-timer-btn" onClick={stopTimer}>重置</button>}
+            </div>
+          </div>
+
+          {/* ── Exercises ─────────────────────────────────────── */}
+          <div className="fit-exercise-list">
+          {s?.exercises?.length ? s.exercises.map((ex: any, ei: number) => (
+        <div
+          className="card exercise-card data-birth"
+          key={`${ex.index}-${ex.name}`}
+          style={{ animationDelay: `${Math.min(ei, 8) * 75}ms` }}
+        >
           <div className="exercise-header">
             {editEx === ei ? (
               <div className="exercise-edit-inline">
@@ -267,15 +414,18 @@ export function Fitness() {
             <button onClick={() => handleDuplicate(ei)}>复制末组</button>
           </div>
         </div>
-      )) || (
-        <div className="card" style={{ textAlign: 'center', color: 'var(--text-dim)', padding: 24 }}>
-          选择训练日开始
+      )) : (
+        <div className="fit-empty-program data-birth">
+          <span>{visibleKind === 'rest' ? 'REST DAY' : 'NO EXERCISES'}</span>
+          <strong>{visibleKind === 'rest' ? '今天的训练是恢复' : '选择训练日开始'}</strong>
+          <p>{visibleKind === 'rest' ? '散步、伸展，给下一次训练留下空间。' : '动作会在角色完成发力后从下方带出。'}</p>
         </div>
       )}
+          </div>
 
-      {/* ── Add exercise form ─────────────────────────────────── */}
-      {s?.exercises && s.exercises.length > 0 && (
-        <div className="card" style={{ marginBottom: 12 }}>
+          {/* ── Add exercise form ─────────────────────────────── */}
+          {s?.exercises && s.exercises.length > 0 && (
+        <div className="card fit-add-card data-birth">
           {!showAddForm ? (
             <button className="fit-add-ex-btn" onClick={() => setShowAddForm(true)}>+ 添加自定义动作</button>
           ) : (
@@ -297,9 +447,11 @@ export function Fitness() {
             </div>
           )}
         </div>
-      )}
+          )}
+        </div>
+      </div>
 
-      <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-dim)', marginTop: 8 }}>
+      <div className="fit-save-status" role="status" aria-live="polite">
         {saveStatus}
       </div>
     </div>
