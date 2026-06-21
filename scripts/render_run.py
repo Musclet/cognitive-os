@@ -73,6 +73,7 @@ async def main():
     chaoxing = ChaoxingConnector(
         use_mock=settings.chaoxing_mock,
         state_file=settings.chaoxing_state_file,
+        event_bus=bus,
         settings=settings,
     )
     bus.subscribe(EventType.CONNECTOR_FETCH_REQUESTED, chaoxing.handle_fetch_request)
