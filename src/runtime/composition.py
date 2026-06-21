@@ -77,6 +77,7 @@ async def build_runtime(
         settings.apply_env_google_credentials()
     if mode == "render":
         settings.apply_env_jwxt_cookies()
+        settings.apply_env_chaoxing_state()
 
     await init_db(settings.database_url)
     event_store = EventStore()

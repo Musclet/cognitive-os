@@ -50,6 +50,8 @@ services:
         generateValue: true
       - key: CHAOXING_MOCK
         value: "false"
+      - key: CHAOXING_STATE_JSON
+        sync: false
       - key: JWXT_MOCK
         value: "false"
       - key: JWXT_COOKIES_JSON
