@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     deepseek_model: str = "deepseek-chat"
     deepseek_timeout_seconds: int = 30
 
-    schedule_daily_sync_times: str = "07:30,22:30"
+    schedule_daily_sync_times: str = "07:00"
     nightly_review_enabled: bool = True
     nightly_review_time: str = "21:00"
     nightly_review_timezone: str = "Asia/Singapore"
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     schedule_check_interval_minutes: int = 30
     homework_check_interval_minutes: int = 60
     homework_sync_interval_hours: int = 12
-    schedule_sync_interval_hours: int = 12
+    schedule_sync_interval_hours: int = 0
     cognitive_checkin_interval_minutes: int = 240
 
     # ── Obsidian / Daily notes ────────────────────────────────────────

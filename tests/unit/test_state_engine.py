@@ -11,6 +11,32 @@ sys.path.insert(0, ".")
 
 from src.core.events import Event, EventType, AggregateType
 from src.core.state_engine import StateEngine
+from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+
+def test_google_calendar_blocks_are_grouped_by_local_date():
+    engine = StateEngine()
+    start = datetime(2026, 6, 21, 16, 30, tzinfo=timezone.utc)
+    block = TimeBlock(
+        block_id="gcal-cross-midnight",
+        source=TemporalSource.GOOGLE_CALENDAR,
+        block_type=TimeBlockType.MEETING_BLOCK,
+        start=start,
+        end=start + timedelta(hours=1),
+        title="跨午夜会议",
+    )
+    block_key = "|".join([
+        str(block.source),
+        block.title,
+        block.start.isoformat(),
+        block.end.isoformat(),
+    ])
+    engine._temporal_blocks = {block_key: block}
+
+    engine._refresh_temporal_views()
+
+    assert "2026-06-22" in engine._temporal_blocks_by_day
+    assert "2026-06-21" not in engine._temporal_blocks_by_day
 
 
 async def test_apply_updates_state():

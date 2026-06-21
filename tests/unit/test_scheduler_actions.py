@@ -112,7 +112,7 @@ async def test_scheduler_schedule_sync_action():
 
 @pytest.mark.asyncio
 async def test_scheduler_interval_semantics():
-    """Verify scheduler intervals for homework (12h), JWXT (12h), Google Calendar (30min default)."""
+    """Verify default intervals exclude extra JWXT polling."""
     from src.infrastructure.config import Settings
     from src.infrastructure.scheduler import CognitiveScheduler
 
@@ -128,11 +128,12 @@ async def test_scheduler_interval_semantics():
         settings.homework_sync_interval_hours * 60,
         {"action": "check_homework"},
     )
-    scheduler.add_interval_job(
-        "auto_sync_schedule",
-        settings.schedule_sync_interval_hours * 60,
-        {"action": "schedule_daily_sync"},
-    )
+    if settings.schedule_sync_interval_hours > 0:
+        scheduler.add_interval_job(
+            "auto_sync_schedule",
+            settings.schedule_sync_interval_hours * 60,
+            {"action": "schedule_daily_sync"},
+        )
     scheduler.add_interval_job(
         "auto_sync_calendar",
         settings.google_calendar_poll_interval_minutes,
@@ -147,9 +148,9 @@ async def test_scheduler_interval_semantics():
     hw_trigger = intervals.get("auto_sync_homework", "")
     assert "12:00:00" in hw_trigger, f"Expected 12h interval, got: {hw_trigger}"
 
-    # JWXT: 12h = 720 min
-    jwxt_trigger = intervals.get("auto_sync_schedule", "")
-    assert "12:00:00" in jwxt_trigger, f"Expected 12h interval, got: {jwxt_trigger}"
+    # JWXT runs through the daily cron by default, not an extra interval.
+    assert settings.schedule_sync_interval_hours == 0
+    assert "auto_sync_schedule" not in intervals
 
     # Google Calendar: 30 min (default, configurable)
     cal_trigger = intervals.get("auto_sync_calendar", "")
@@ -170,6 +171,32 @@ async def test_scheduler_interval_semantics():
 
     # Summary: fastest reasonable calendar interval is 15 min (API quota permitting).
     # Default 30 min is good for browser-heavy connectors.
+    scheduler.stop()
+
+
+def test_scheduler_default_jwxt_daily_job_is_0700():
+    from src.infrastructure.config import Settings
+    from src.infrastructure.scheduler import CognitiveScheduler
+
+    settings = Settings()
+    scheduler = CognitiveScheduler()
+
+    for sync_time in settings.schedule_daily_sync_times.split(","):
+        hour_text, minute_text = sync_time.strip().split(":", 1)
+        scheduler.add_daily_job(
+            f"schedule_daily_sync_{hour_text}_{minute_text}",
+            int(hour_text),
+            int(minute_text),
+            {"action": "schedule_daily_sync"},
+            timezone_str=settings.google_calendar_timezone,
+        )
+
+    jobs = scheduler.jobs
+    assert settings.schedule_daily_sync_times == "07:00"
+    assert len(jobs) == 1
+    assert jobs[0]["id"] == "schedule_daily_sync_07_00"
+    assert "hour='7'" in jobs[0]["trigger"]
+    assert "minute='0'" in jobs[0]["trigger"]
     scheduler.stop()
 
 
