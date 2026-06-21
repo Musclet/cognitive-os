@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { checkAuth, login, logout, postAction, postUndo, postProposalDecision } from './api'
 import { NavDock } from './components/NavDock'
-import { StatusRail } from './components/StatusRail'
 import { BottomNav } from './components/BottomNav'
 import { Overview } from './pages/Overview'
 import { TimelinePage } from './pages/TimelinePage'
@@ -35,6 +34,16 @@ const QUICK_SHORTCUTS: QuickShortcut[] = [
   { label: '到账100', text: '生活费到账100', routes: ['finance'] },
   { label: '今天请假', text: '请假今天', action: 'school_leave_today', routes: ['timeline', 'system'] },
 ]
+
+const ROUTE_MOTION: Record<string, { label: string; tone: string }> = {
+  overview: { label: 'TODAY', tone: 'red' },
+  tasks: { label: 'TASKS', tone: 'amber' },
+  timeline: { label: 'TIME', tone: 'mint' },
+  review: { label: 'REVIEW', tone: 'purple' },
+  fitness: { label: 'FITNESS', tone: 'mint' },
+  finance: { label: 'FINANCE', tone: 'amber' },
+  system: { label: 'SYSTEM', tone: 'ink' },
+}
 
 function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const [pin, setPin] = useState('')
@@ -127,6 +136,9 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 function MainShell() {
   const navigate = useNavigate()
   const location = useLocation()
+  const mainRef = useRef<HTMLElement>(null)
+  const pointerAuraRef = useRef<HTMLDivElement>(null)
+  const scrollProgressRef = useRef<HTMLDivElement>(null)
   const [cmdText, setCmdText] = useState('')
   const [cmdStatus, setCmdStatus] = useState<{ msg: string; ok: boolean } | null>(null)
   const [lastAction, setLastAction] = useState<{ id: string; type: string } | null>(null)
@@ -134,6 +146,7 @@ function MainShell() {
   const [undoing, setUndoing] = useState(false)
   const [cmdSubmitting, setCmdSubmitting] = useState(false)
   const [decidingProposal, setDecidingProposal] = useState<'accept' | 'reject' | null>(null)
+  const [composerOpen, setComposerOpen] = useState(false)
   const cmdTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const cmdSubmittingRef = useRef(false)
   const { showPrompt: showInstall, install: handleInstall, dismiss: dismissInstall } = useInstallPrompt()
@@ -227,24 +240,115 @@ function MainShell() {
     if (!cmdText.trim()) return
     executeAction(cmdText.trim())
     setCmdText('')
+    setComposerOpen(false)
   }
 
   const tabs = [
-    { key: 'overview', label: '总览', icon: 'LayoutDashboard' },
-    { key: 'timeline', label: '时间', icon: 'Clock' },
-    { key: 'tasks', label: '任务', icon: 'CheckSquare' },
-    { key: 'fitness', label: '健身', icon: 'Dumbbell' },
-    { key: 'finance', label: '财务', icon: 'Wallet' },
-    { key: 'review', label: '复盘', icon: 'BarChart3' },
-    { key: 'system', label: '系统', icon: 'Monitor' },
+    { key: 'overview', label: '今日', icon: 'Sunrise', section: 'primary' as const },
+    { key: 'tasks', label: '任务', icon: 'CheckSquare', section: 'primary' as const },
+    { key: 'timeline', label: '时间', icon: 'Clock3', section: 'primary' as const },
+    { key: 'review', label: '复盘', icon: 'NotebookPen', section: 'primary' as const },
+    { key: 'fitness', label: '健身', icon: 'Dumbbell', section: 'area' as const },
+    { key: 'finance', label: '财务', icon: 'WalletCards', section: 'area' as const },
+    { key: 'system', label: '系统', icon: 'Settings2', section: 'system' as const },
   ]
 
   const currentKey = location.pathname.replace('/app/', '') || 'overview'
+  const routeMotion = ROUTE_MOTION[currentKey] || ROUTE_MOTION.overview
   const activeShortcuts = QUICK_SHORTCUTS
     .filter(shortcut => !shortcut.routes || shortcut.routes.includes(currentKey))
     .slice(0, 6)
 
+  useEffect(() => {
+    const main = mainRef.current
+    const progress = scrollProgressRef.current
+    if (!main || !progress) return
+
+    const updateProgress = () => {
+      const max = Math.max(main.scrollHeight - main.clientHeight, 1)
+      progress.style.setProperty('--scroll-progress', `${Math.min(main.scrollTop / max, 1)}`)
+    }
+    updateProgress()
+    main.addEventListener('scroll', updateProgress, { passive: true })
+    return () => main.removeEventListener('scroll', updateProgress)
+  }, [])
+
+  useEffect(() => {
+    const main = mainRef.current
+    if (!main) return
+    main.scrollTop = 0
+    scrollProgressRef.current?.style.setProperty('--scroll-progress', '0')
+
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const selector = [
+      '.hero-card',
+      '.focus-card',
+      '.next-card',
+      '.page-header',
+      '.page-section-head',
+      '.overview-flow-card',
+      '.area-card',
+      '.capture-panel',
+      '.task-capture',
+      '.task-group',
+      '.card',
+    ].join(',')
+    let revealIndex = 0
+    const observer = reducedMotion || typeof IntersectionObserver === 'undefined'
+      ? null
+      : new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return
+          entry.target.classList.add('is-visible')
+          observer?.unobserve(entry.target)
+        })
+      }, { threshold: 0.08, root: main, rootMargin: '0px 0px -7% 0px' })
+
+    const registerRevealTargets = () => {
+      const elements = Array.from(main.querySelectorAll<HTMLElement>(selector))
+      elements.forEach(element => {
+        if (element.classList.contains('motion-reveal')) return
+        element.classList.add('motion-reveal')
+        element.style.setProperty('--motion-order', String(revealIndex % 6))
+        revealIndex += 1
+        if (observer) observer.observe(element)
+        else element.classList.add('is-visible')
+      })
+    }
+
+    registerRevealTargets()
+    const mutationObserver = new MutationObserver(registerRevealTargets)
+    mutationObserver.observe(main, { childList: true, subtree: true })
+    return () => {
+      mutationObserver.disconnect()
+      observer?.disconnect()
+    }
+  }, [location.pathname])
+
+  useEffect(() => {
+    const aura = pointerAuraRef.current
+    if (!aura || !window.matchMedia('(pointer: fine)').matches) return
+
+    const handlePointerMove = (event: PointerEvent) => {
+      aura.style.setProperty('--pointer-x', `${event.clientX}px`)
+      aura.style.setProperty('--pointer-y', `${event.clientY}px`)
+      const interactive = event.target instanceof Element &&
+        Boolean(event.target.closest('button, a, summary, input, select, textarea'))
+      aura.classList.toggle('is-active', interactive)
+      aura.classList.add('is-visible')
+    }
+    const handlePointerLeave = () => aura.classList.remove('is-visible')
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: true })
+    document.documentElement.addEventListener('mouseleave', handlePointerLeave)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      document.documentElement.removeEventListener('mouseleave', handlePointerLeave)
+    }
+  }, [])
+
   const handleNavigate = (key: string) => {
+    setComposerOpen(false)
     navigate(`/app/${key === 'overview' ? '' : key}`)
   }
 
@@ -254,6 +358,18 @@ function MainShell() {
 
   return (
     <div className="app-shell">
+      <div
+        className="route-transition"
+        data-tone={routeMotion.tone}
+        key={location.pathname}
+        aria-hidden="true"
+      >
+        <span>{routeMotion.label}</span>
+        <small>COGNITIVE OS</small>
+      </div>
+      <div className="pointer-aura" ref={pointerAuraRef} aria-hidden="true" />
+      <div className="scroll-progress" ref={scrollProgressRef} aria-hidden="true"><span /></div>
+
       {/* Install prompt banner */}
       <div className={`install-prompt ${showInstall ? 'visible' : ''}`}>
         <span className="install-prompt-text">将此应用安装到桌面，获得更好的体验</span>
@@ -268,8 +384,13 @@ function MainShell() {
         <span className="wco-title">Cognitive OS</span>
       </div>
 
-      <NavDock tabs={tabs} activeKey={currentKey} onNavigate={handleNavigate} />
-      <main className="main-content">
+      <NavDock
+        tabs={tabs}
+        activeKey={currentKey}
+        onNavigate={handleNavigate}
+        onLogout={async () => { await logout(); window.location.reload() }}
+      />
+      <main className="main-content" ref={mainRef}>
         {cmdStatus && (
           <div className={`cmd-toast ${cmdStatus.ok ? 'ok' : 'err'}`} role="status" aria-live="polite">
             {cmdStatus.msg}
@@ -331,13 +452,25 @@ function MainShell() {
           <Route path="/app/system" element={<SystemPage onAction={executeAction} />} />
         </Routes>
       </main>
-      <StatusRail />
       <BottomNav tabs={tabs} activeKey={currentKey} onNavigate={handleNavigate} />
-      <button className="logout-btn-bottom" onClick={async () => { await logout(); window.location.reload() }} title="退出">
-        ⬅
+      <button
+        className="mobile-capture-trigger"
+        onClick={() => setComposerOpen(open => !open)}
+        aria-expanded={composerOpen}
+        aria-controls="global-command-composer"
+      >
+        {composerOpen ? '关闭' : '记录'}
       </button>
       {/* Global command composer */}
-      <div className="cmd-composer-bar">
+      {composerOpen && <div className="cmd-composer-backdrop" onClick={() => setComposerOpen(false)} />}
+      <div id="global-command-composer" className={`cmd-composer-bar ${composerOpen ? 'mobile-open' : ''}`}>
+        <div className="cmd-composer-heading">
+          <div>
+            <div className="cmd-composer-kicker">CAPTURE</div>
+            <div className="cmd-composer-title">记录此刻</div>
+          </div>
+          <button className="cmd-composer-close" onClick={() => setComposerOpen(false)} type="button">关闭</button>
+        </div>
         {activeShortcuts.length > 0 && (
           <div className="cmd-quickbar">
             {activeShortcuts.map(shortcut => (
