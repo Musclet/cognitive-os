@@ -5,6 +5,64 @@ import { announceWebAction, refreshDashboard } from '../events'
 
 interface Props { onAction?: (text: string, action?: string) => void }
 
+interface ScoreStepperProps {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}
+
+function ScoreStepper({ label, value, onChange }: ScoreStepperProps) {
+  const adjust = (delta: number) => {
+    const current = value ? Number(value) : (delta > 0 ? 0 : 11)
+    onChange(String(Math.max(1, Math.min(10, current + delta))))
+  }
+
+  return (
+    <label className="review-score-field">
+      <span>{label}</span>
+      <div className="review-stepper">
+        <button
+          type="button"
+          className="review-stepper-btn"
+          aria-label={`降低${label}`}
+          disabled={value === '1'}
+          onClick={() => adjust(-1)}
+        >
+          −
+        </button>
+        <input
+          type="number"
+          min="1"
+          max="10"
+          inputMode="numeric"
+          aria-label={`${label}分数，1到10`}
+          value={value}
+          onChange={e => {
+            const next = e.target.value
+            if (!next) onChange('')
+            else {
+              const numeric = Number(next)
+              if (Number.isFinite(numeric)) {
+                onChange(String(Math.max(1, Math.min(10, numeric))))
+              }
+            }
+          }}
+          placeholder="—"
+        />
+        <button
+          type="button"
+          className="review-stepper-btn"
+          aria-label={`提高${label}`}
+          disabled={value === '10'}
+          onClick={() => adjust(1)}
+        >
+          +
+        </button>
+      </div>
+    </label>
+  )
+}
+
 export function Review({ onAction: _onAction }: Props) {
   const [data, setData] = useState<DashboardData | null>(null)
   const [moodScore, setMoodScore] = useState('')
@@ -101,18 +159,9 @@ export function Review({ onAction: _onAction }: Props) {
         </div>
 
         <div className="review-score-row">
-          <label>
-            <span>心情</span>
-            <input type="number" min="1" max="10" value={moodScore} onChange={e => setMoodScore(e.target.value)} placeholder="1-10" />
-          </label>
-          <label>
-            <span>精力</span>
-            <input type="number" min="1" max="10" value={energyScore} onChange={e => setEnergyScore(e.target.value)} placeholder="1-10" />
-          </label>
-          <label>
-            <span>压力</span>
-            <input type="number" min="1" max="10" value={pressureScore} onChange={e => setPressureScore(e.target.value)} placeholder="1-10" />
-          </label>
+          <ScoreStepper label="心情" value={moodScore} onChange={setMoodScore} />
+          <ScoreStepper label="精力" value={energyScore} onChange={setEnergyScore} />
+          <ScoreStepper label="压力" value={pressureScore} onChange={setPressureScore} />
         </div>
 
         <div className="review-field-grid">

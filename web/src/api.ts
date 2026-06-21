@@ -187,7 +187,14 @@ export async function postUndo(actionId: string): Promise<{ ok: boolean; message
 export async function postProposalDecision(
   proposal: any,
   decision: 'accept' | 'reject',
-): Promise<{ ok: boolean; message: string; needs_followup: boolean; event?: any; dashboard?: DashboardData }> {
+): Promise<{
+  ok: boolean;
+  message: string;
+  needs_followup: boolean;
+  error_code?: string;
+  event?: any;
+  dashboard?: DashboardData;
+}> {
   const body: Record<string, any> = { decision };
   // Always pass proposal_id separately so the backend can look it up from
   // StateEngine if the full proposal dict becomes stale.
