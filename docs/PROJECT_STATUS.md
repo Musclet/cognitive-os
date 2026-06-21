@@ -1,16 +1,16 @@
 # Project Status
 
 Last audited: 2026-06-21
-Audit base: `40cc986`
-Working branch: `fix/web-ui-usability-and-sync-regressions`
+Audit base: `ab61739`
+Working branch: `feature/google-calendar-real-write-setup`
 
 ## Verified Baseline
 
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `1089 passed, 156 warnings` |
-| Focused JWXT/schedule/calendar/dashboard/sync tests | `460 passed, 629 deselected` |
+| Python tests | `1107 passed, 156 warnings` |
+| Focused calendar/proposal/google tests | `159 passed, 948 deselected` |
 | Snapshot/replay determinism | PASS |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src scripts`) | FAIL: 5 pre-existing `course_registry` F821 findings in `scripts/run_step4_connector.py` |
@@ -27,6 +27,13 @@ batch.
 
 ## Completed In This Branch
 
+- Enabled local Google Calendar real-write setup while retaining explicit
+  proposal acceptance, stable auth/write error codes, and non-interactive
+  runtime authentication.
+- Added sanitized OAuth tooling output, real event ID/link propagation,
+  proposal-gated deletion cleanup, and setup/acceptance documentation.
+- Verified a real event was absent before Accept, created after Accept, and
+  then deleted through a second accepted proposal.
 - Fixed new-schedule button, date input, review stepper, and workout ring
   usability regressions in the refreshed Web UI.
 - Stopped Google Calendar mock mode from reporting a non-persistent new

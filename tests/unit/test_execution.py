@@ -109,7 +109,7 @@ async def test_executor_rejects_non_accepted():
     p = Proposal(status=ProposalStatus.PENDING)
     result = await executor.execute(p)
     assert result.event_type == EventType.EXECUTION_FAILED
-    assert "not accepted" in result.payload.get("error", "").lower()
+    assert result.payload.get("error_code") == "google_calendar_proposal_not_accepted"
     print("\u2713 executor: rejects non-accepted proposal")
 
 

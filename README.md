@@ -49,3 +49,6 @@ assuming a local feature is active in production.
 
 Automated Google Calendar schedule writes are disabled in the blueprint until
 the batch-write path is moved behind the accepted-proposal execution contract.
+
+For local OAuth and proposal-gated event creation, see
+[`docs/google-calendar-write.md`](docs/google-calendar-write.md).

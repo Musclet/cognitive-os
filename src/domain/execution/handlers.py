@@ -124,6 +124,12 @@ async def handle_user_accepted_proposal(event: Event) -> list[Event]:
         payload=proposal.to_dict(),
     )
 
+    # Update/delete proposals are executed by the Web decision route, which
+    # calls the operation-specific executor method and emits the matching
+    # calendar event type. Do not misroute them through create-event execute().
+    if proposal.proposal_type != ProposalType.CREATE_CALENDAR_BLOCK:
+        return [exec_requested]
+
     settings = Settings()
     executor = get_executor(use_mock=settings.google_calendar_mock, settings=settings)
     result = await executor.execute(proposal)

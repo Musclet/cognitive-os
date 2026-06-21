@@ -10,6 +10,14 @@ from typing import Any
 from src.core.events import AggregateType, Event, EventType
 
 
+class GoogleCalendarAuthError(RuntimeError):
+    """Safe Google Calendar authentication failure with a stable error code."""
+
+    def __init__(self, error_code: str) -> None:
+        self.error_code = error_code
+        super().__init__(error_code)
+
+
 class GoogleCalendarAuth:
     """OAuth token lifecycle manager for Google Calendar."""
 
@@ -18,7 +26,12 @@ class GoogleCalendarAuth:
         self._token_path = Path(token_path)
         self._scopes = scopes
 
-    def authenticate(self, trace_id: str = "") -> tuple[Any, list[Event]]:
+    def authenticate(
+        self,
+        trace_id: str = "",
+        *,
+        allow_interactive: bool = False,
+    ) -> tuple[Any, list[Event]]:
         events: list[Event] = [
             Event(
                 event_type=EventType.GOOGLE_CALENDAR_AUTH_STARTED,
@@ -35,34 +48,47 @@ class GoogleCalendarAuth:
                 aggregate_id="google_calendar",
                 aggregate_type=AggregateType.SYSTEM,
                 payload={"error": "credentials missing"},
-                metadata={"trace_id": trace_id, "source": "google_calendar", "error_code": "credentials_missing"},
+                metadata={
+                    "trace_id": trace_id,
+                    "source": "google_calendar",
+                    "error_code": "google_calendar_credentials_missing",
+                },
             ))
-            raise RuntimeError("Google Calendar credentials missing")
+            raise GoogleCalendarAuthError("google_calendar_credentials_missing")
 
         try:
             from google.auth.transport.requests import Request
             from google.oauth2.credentials import Credentials
             from google_auth_oauthlib.flow import InstalledAppFlow
-        except Exception as exc:
+        except Exception:
             events.append(Event(
                 event_type=EventType.GOOGLE_CALENDAR_AUTH_FAILED,
                 aggregate_id="google_calendar",
                 aggregate_type=AggregateType.SYSTEM,
-                payload={"error": f"google auth dependencies unavailable: {exc}"},
-                metadata={"trace_id": trace_id, "source": "google_calendar", "error_code": "auth_dependency_missing"},
+                payload={"error": "google_calendar_auth_failed"},
+                metadata={
+                    "trace_id": trace_id,
+                    "source": "google_calendar",
+                    "error_code": "google_calendar_auth_failed",
+                },
             ))
-            raise
+            raise GoogleCalendarAuthError("google_calendar_auth_failed") from None
 
         creds = None
         if self._token_path.exists():
             try:
                 creds = Credentials.from_authorized_user_file(str(self._token_path), self._scopes)
             except Exception:
-                creds = None
+                raise GoogleCalendarAuthError("google_calendar_token_invalid") from None
+        elif not allow_interactive:
+            raise GoogleCalendarAuthError("google_calendar_token_missing")
 
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            self._token_path.write_text(creds.to_json(), encoding="utf-8")
+            try:
+                creds.refresh(Request())
+                self._token_path.write_text(creds.to_json(), encoding="utf-8")
+            except Exception:
+                raise GoogleCalendarAuthError("google_calendar_token_invalid") from None
             events.append(Event(
                 event_type=EventType.GOOGLE_CALENDAR_TOKEN_REFRESHED,
                 aggregate_id="google_calendar",
@@ -76,15 +102,36 @@ class GoogleCalendarAuth:
                 aggregate_id="google_calendar",
                 aggregate_type=AggregateType.SYSTEM,
                 payload={"token_path": str(self._token_path)},
-                metadata={"trace_id": trace_id, "source": "google_calendar", "error_code": "token_expired"},
+                metadata={
+                    "trace_id": trace_id,
+                    "source": "google_calendar",
+                    "error_code": "google_calendar_token_invalid",
+                },
             ))
-            creds = None
+            raise GoogleCalendarAuthError("google_calendar_token_invalid")
 
         if not creds or not creds.valid:
-            flow = InstalledAppFlow.from_client_secrets_file(str(self._credentials_path), self._scopes)
-            creds = flow.run_local_server(port=0)
-            self._token_path.parent.mkdir(parents=True, exist_ok=True)
-            self._token_path.write_text(creds.to_json(), encoding="utf-8")
+            if not allow_interactive:
+                raise GoogleCalendarAuthError(
+                    "google_calendar_token_invalid"
+                    if self._token_path.exists()
+                    else "google_calendar_token_missing"
+                )
+            try:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    str(self._credentials_path),
+                    self._scopes,
+                )
+                creds = flow.run_local_server(
+                    port=0,
+                    authorization_prompt_message="",
+                )
+                self._token_path.parent.mkdir(parents=True, exist_ok=True)
+                self._token_path.write_text(creds.to_json(), encoding="utf-8")
+            except GoogleCalendarAuthError:
+                raise
+            except Exception:
+                raise GoogleCalendarAuthError("google_calendar_auth_failed") from None
 
         events.append(Event(
             event_type=EventType.GOOGLE_CALENDAR_AUTH_COMPLETED,
