@@ -65,7 +65,13 @@ class ChaoxingBrowser:
 
         logger.info("[BROWSER] starting Playwright...")
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=self._headless)
+        launch_args = ["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"]
+        if self._headless:
+            launch_args.append("--disable-setuid-sandbox")
+        self._browser = await self._playwright.chromium.launch(
+            headless=self._headless,
+            args=launch_args,
+        )
         self._context = await self._browser.new_context(
             storage_state=str(self._state_path),
             viewport={"width": 1280, "height": 720},
