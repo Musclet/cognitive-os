@@ -79,6 +79,39 @@ async def main():
     bus.subscribe(EventType.CONNECTOR_FETCH_REQUESTED, chaoxing.handle_fetch_request)
     logger.info("chaoxing connector subscribed, mock=%s", settings.chaoxing_mock)
 
+    # Wire scheduled-trigger → connector bridge (normally done by Telegram bot)
+    async def _on_scheduled(event: Event) -> list[Event]:
+        if event.event_type != EventType.SYSTEM_SCHEDULED_TRIGGER:
+            return []
+        action = str(event.payload.get("action", ""))
+        if action == "check_homework":
+            return [Event(
+                event_type=EventType.CONNECTOR_FETCH_REQUESTED,
+                aggregate_id=event.aggregate_id,
+                aggregate_type=AggregateType.HOMEWORK,
+                causation_id=event.event_id,
+                payload={"source": "chaoxing", "query": "homework_list"},
+            )]
+        if action == "schedule_daily_sync":
+            return [Event(
+                event_type=EventType.CONNECTOR_FETCH_REQUESTED,
+                aggregate_id=event.aggregate_id,
+                aggregate_type=AggregateType.SYSTEM,
+                causation_id=event.event_id,
+                payload={"source": "jwxt", "query": "weekly_schedule", "intent": "schedule_daily_sync"},
+            )]
+        if action == "calendar_sync":
+            return [Event(
+                event_type=EventType.CONNECTOR_FETCH_REQUESTED,
+                aggregate_id=event.aggregate_id,
+                aggregate_type=AggregateType.SYSTEM,
+                causation_id=event.event_id,
+                payload={"source": "google_calendar", "query": "upcoming"},
+            )]
+        return []
+    bus.subscribe(EventType.SYSTEM_SCHEDULED_TRIGGER, _on_scheduled)
+    logger.info("scheduled-trigger bridge subscribed")
+
     # Build app
     app = runtime.app
     if app is None:
