@@ -1,8 +1,8 @@
 // Cognitive OS Service Worker
 // Network-first with cache fallback for API; cache-first for static assets
 
-const CACHE_NAME = 'cogos-v1';
-const STATIC_CACHE = 'cogos-static-v1';
+const CACHE_NAME = 'cogos-v4';
+const STATIC_CACHE = 'cogos-static-v4';
 
 // Assets to pre-cache on install
 const PRECACHE_URLS = [

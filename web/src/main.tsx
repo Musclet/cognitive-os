@@ -3,9 +3,34 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './App.css'
 
-// Register service worker for PWA
+// Keep Vite development free from stale PWA assets; register only production builds.
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
+    if (import.meta.env.DEV) {
+      Promise.all([
+        navigator.serviceWorker.getRegistrations(),
+        'caches' in window ? caches.keys() : Promise.resolve([]),
+      ]).then(async ([registrations, cacheKeys]) => {
+        const appRegistrations = registrations.filter(registration =>
+          registration.scope.startsWith(`${window.location.origin}/app/`)
+        )
+        const appCaches = cacheKeys.filter(key => key.startsWith('cogos'))
+        await Promise.all([
+          ...appRegistrations.map(registration => registration.unregister()),
+          ...appCaches.map(key => caches.delete(key)),
+        ])
+
+        const reloadKey = 'cogos-dev-cache-cleaned'
+        if ((appRegistrations.length || appCaches.length) && !sessionStorage.getItem(reloadKey)) {
+          sessionStorage.setItem(reloadKey, '1')
+          window.location.reload()
+          return
+        }
+        sessionStorage.removeItem(reloadKey)
+      })
+      return
+    }
+
     navigator.serviceWorker.register('/app/sw.js', { scope: '/app/' }).then(
       (registration) => {
         console.log('[PWA] Service Worker registered:', registration.scope)

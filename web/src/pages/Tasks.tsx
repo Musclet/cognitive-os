@@ -33,6 +33,48 @@ function homeworkEmptyText(reason?: string): string {
   return messages[reason || ''] || '暂无作业'
 }
 
+interface TaskGroup {
+  key: string
+  label: string
+  description: string
+  tone: 'danger' | 'warning' | 'normal' | 'muted'
+  items: any[]
+}
+
+function groupHomework(homework: any[]): TaskGroup[] {
+  const groups: TaskGroup[] = [
+    { key: 'overdue', label: '已经逾期', description: '先清理已经越过截止时间的事项', tone: 'danger', items: [] },
+    { key: 'soon', label: '48 小时内', description: '需要尽快决定何时完成', tone: 'warning', items: [] },
+    { key: 'week', label: '本周', description: '保持在视野内，不必立刻打断当前任务', tone: 'normal', items: [] },
+    { key: 'later', label: '稍后', description: '未来事项与无期限任务', tone: 'muted', items: [] },
+  ]
+  const now = Date.now()
+  const twoDays = 48 * 60 * 60 * 1000
+  const oneWeek = 7 * 24 * 60 * 60 * 1000
+
+  homework
+    .slice()
+    .sort((a, b) => {
+      const aTime = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY
+      const bTime = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY
+      return aTime - bTime
+    })
+    .forEach(hw => {
+      const deadline = hw.deadline ? new Date(hw.deadline).getTime() : Number.NaN
+      if (hw.status === 'expired' || (Number.isFinite(deadline) && deadline < now)) {
+        groups[0].items.push(hw)
+      } else if (Number.isFinite(deadline) && deadline - now <= twoDays) {
+        groups[1].items.push(hw)
+      } else if (Number.isFinite(deadline) && deadline - now <= oneWeek) {
+        groups[2].items.push(hw)
+      } else {
+        groups[3].items.push(hw)
+      }
+    })
+
+  return groups.filter(group => group.items.length > 0)
+}
+
 export function Tasks({ onAction }: Props) {
   const [data, setData] = useState<DashboardData | null>(null)
   const [completionText, setCompletionText] = useState('')
@@ -273,43 +315,42 @@ export function Tasks({ onAction }: Props) {
   const vocab = data.vocab_progress ?? {}
   const art = data.art
   const allSelected = homework.length > 0 && selectedIds.size === homework.length
+  const taskGroups = groupHomework(homework)
 
   return (
-    <div>
-      <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>任务</h2>
-
-      {onAction && (
-        <div className="cmd-page-actions" style={{ marginBottom: 16 }}>
-          <button className="quick-chip" onClick={() => onAction('同步作业', 'sync_refresh')}>
+    <div className="tasks-page">
+      <header className="page-header">
+        <div>
+          <div className="section-eyebrow">TASKS / 行动</div>
+          <h1>把注意力留给下一步</h1>
+          <p>{homework.length} 项待处理{hiddenCount > 0 ? `，另有 ${hiddenCount} 项已隐藏` : ''}</p>
+        </div>
+        {onAction && (
+          <button className="page-header-action" onClick={() => onAction('同步作业', 'sync_refresh')}>
             同步作业
           </button>
-          <button className="quick-chip" onClick={() => onAction('刷新状态', 'sync_refresh')}>
-            刷新状态
-          </button>
-        </div>
-      )}
+        )}
+      </header>
 
-      {/* Completion record form */}
       {onAction && (
-        <form onSubmit={handleCompletionSubmit} className="cmd-inline-form" style={{ marginBottom: 16 }}>
-          <input
-            type="text"
-            className="cmd-composer-input"
-            placeholder="记录完成事项，如：完成了作业 / 完成了0.5h画画..."
-            value={completionText}
-            onChange={e => setCompletionText(e.target.value)}
-          />
-          <button type="submit" className="cmd-composer-btn" disabled={!completionText.trim()}>记录完成</button>
-          {completionStatus && <span className="cmd-status-hint">{completionStatus}</span>}
-        </form>
+        <details className="task-capture">
+          <summary>记录一个不在列表里的完成事项</summary>
+          <form onSubmit={handleCompletionSubmit} className="cmd-inline-form">
+            <input
+              type="text"
+              className="cmd-composer-input"
+              placeholder="例如：完成了 30 分钟画画"
+              value={completionText}
+              onChange={e => setCompletionText(e.target.value)}
+            />
+            <button type="submit" className="cmd-composer-btn" disabled={!completionText.trim()}>记录完成</button>
+            {completionStatus && <span className="cmd-status-hint">{completionStatus}</span>}
+          </form>
+        </details>
       )}
 
-      {/* Batch status toast */}
-      {batchMsg && (
-        <div style={{ fontSize: 12, color: 'var(--accent-green)', marginBottom: 8 }}>{batchMsg}</div>
-      )}
+      {batchMsg && <div className="task-page-status">{batchMsg}</div>}
 
-      {/* Batch toolbar */}
       {selectedIds.size > 0 && (
         <div className="task-batch-toolbar">
           <span className="task-batch-count">已选 {selectedIds.size} 项</span>
@@ -328,8 +369,8 @@ export function Tasks({ onAction }: Props) {
         </div>
       )}
 
-      <div style={{ marginBottom: 20 }}>
-        <div className="section-label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="task-list-head">
+        <label>
           {homework.length > 0 && (
             <input
               type="checkbox"
@@ -339,134 +380,108 @@ export function Tasks({ onAction }: Props) {
               title="全选/取消"
             />
           )}
-          <span>📝 作业 · {homework.length} 项</span>
-          {hiddenCount > 0 ? ` · 已处理隐藏 ${hiddenCount} 项` : ''}
-        </div>
-        {homework.length === 0 && (
-          <div className="card" style={{ color: 'var(--text-dim)', fontSize: 13 }}>
-            {homeworkEmptyText(data.homework_empty_reason)}
-          </div>
-        )}
-        {homework.map((hw: any, i: number) => {
-          const hwId = String(hw.id || hw.title || i)
-          const isSelected = selectedIds.has(hwId)
-          return (
-            <div
-              className={`card task-card${isSelected ? ' task-card-selected' : ''}`}
-              key={hwId}
-              style={{ marginBottom: 8 }}
-            >
-              <div className="task-card-head">
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flex: 1 }}>
-                  <input
-                    type="checkbox"
-                    className="task-checkbox"
-                    checked={isSelected}
-                    onChange={() => toggleSelect(hwId)}
-                  />
-                  <div>
-                    <div className="task-title">{hw.title}</div>
-                    <div className="task-subtitle">{hw.course || '未归属课程'}</div>
-                  </div>
-                </div>
-                <span className="task-status" style={{ color: STATUS_COLORS[hw.status] || 'var(--text-secondary)' }}>
-                  {STATUS_LABELS[hw.status] || hw.status || 'pending'}
-                </span>
-              </div>
-              <div className="task-meta-line">
-                {hw.deadline ? `截止 ${hw.deadline.slice(0, 16).replace('T', ' ')}` : '无期限'}
-                {hw.feedback?.delayed_until ? ` · 稍后至 ${formatDelayUntil(hw.feedback.delayed_until)}` : ''}
-              </div>
-              {onAction && (
-                <div className="task-actions">
-                  <button className="task-action-btn primary" onClick={() => runHomeworkAction(hw, 'complete_homework')}>
-                    已完成
-                  </button>
-                  <button className="task-action-btn" onClick={() => runHomeworkAction(hw, 'delay_homework_30')}>
-                    稍后30分钟
-                  </button>
-                  <button className="task-action-btn danger" onClick={() => runHomeworkAction(hw, 'skip_homework')}>
-                    跳过
-                  </button>
-                  <button className="task-action-btn" onClick={() => openCalForm(hw)}>
-                    安排到日历
-                  </button>
-                </div>
-              )}
-              {taskStatus[hwId] && (
-                <div className="task-local-status">{taskStatus[hwId]}</div>
-              )}
-
-              {/* Inline calendar form */}
-              {calFormHw && calFormHw.id === hw.id && !calProposal && (
-                <div className="task-cal-form">
-                  <div className="task-cal-form-row">
-                    <label className="task-cal-label">日期</label>
-                    <input
-                      type="date"
-                      className="tl-form-input"
-                      value={calForm.date}
-                      onChange={e => setCalForm(prev => ({ ...prev, date: e.target.value }))}
-                    />
-                  </div>
-                  <div className="task-cal-form-row">
-                    <label className="task-cal-label">开始</label>
-                    <input
-                      type="time"
-                      className="tl-form-input"
-                      value={calForm.start}
-                      onChange={e => setCalForm(prev => ({ ...prev, start: e.target.value }))}
-                    />
-                  </div>
-                  <div className="task-cal-form-row">
-                    <label className="task-cal-label">结束</label>
-                    <input
-                      type="time"
-                      className="tl-form-input"
-                      value={calForm.end}
-                      onChange={e => setCalForm(prev => ({ ...prev, end: e.target.value }))}
-                    />
-                  </div>
-                  <div className="task-cal-form-row">
-                    <label className="task-cal-label">地点</label>
-                    <input
-                      type="text"
-                      className="tl-form-input"
-                      placeholder="可选"
-                      value={calForm.location}
-                      onChange={e => setCalForm(prev => ({ ...prev, location: e.target.value }))}
-                    />
-                  </div>
-                  <div className="task-cal-form-row">
-                    <label className="task-cal-label">备注</label>
-                    <input
-                      type="text"
-                      className="tl-form-input"
-                      placeholder="可选"
-                      value={calForm.note}
-                      onChange={e => setCalForm(prev => ({ ...prev, note: e.target.value }))}
-                    />
-                  </div>
-                  <div className="task-cal-form-actions">
-                    <button
-                      className="task-action-btn primary"
-                      onClick={submitCalProposal}
-                      disabled={calBusy || !calForm.date || !calForm.start}
-                    >
-                      {calBusy ? '创建中...' : '生成提案'}
-                    </button>
-                    <button className="task-action-btn danger" onClick={closeCalForm}>
-                      取消
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )
-        })}
+          <span>选择全部</span>
+        </label>
+        <span>{homework.length} 项</span>
       </div>
 
-      {/* Inline proposal card */}
+      {homework.length === 0 && (
+        <div className="card empty-state-card">{homeworkEmptyText(data.homework_empty_reason)}</div>
+      )}
+
+      <div className="task-groups">
+        {taskGroups.map(group => (
+          <section className={`task-group tone-${group.tone}`} key={group.key}>
+            <div className="task-group-head">
+              <div>
+                <h2>{group.label}</h2>
+                <p>{group.description}</p>
+              </div>
+              <span>{group.items.length}</span>
+            </div>
+            <div className="task-group-list">
+              {group.items.map((hw: any, index: number) => {
+                const hwId = String(hw.id || hw.title || `${group.key}-${index}`)
+                const isSelected = selectedIds.has(hwId)
+                const isCalendarOpen = calFormHw &&
+                  String(calFormHw.id || calFormHw.title || '') === String(hw.id || hw.title || '')
+                return (
+                  <article className={`task-list-item${isSelected ? ' task-card-selected' : ''}`} key={hwId}>
+                    <input
+                      type="checkbox"
+                      className="task-checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleSelect(hwId)}
+                      aria-label={`选择 ${hw.title}`}
+                    />
+                    <div className="task-list-content">
+                      <div className="task-list-meta">
+                        <span className="task-course">{hw.course || '未归属课程'}</span>
+                        <span className="task-status" style={{ color: STATUS_COLORS[hw.status] || 'var(--text-secondary)' }}>
+                          {STATUS_LABELS[hw.status] || hw.status || '待完成'}
+                        </span>
+                      </div>
+                      <div className="task-title">{hw.title}</div>
+                      <div className="task-meta-line">
+                        {hw.deadline ? `截止 ${hw.deadline.slice(0, 16).replace('T', ' ')}` : '无期限'}
+                        {hw.feedback?.delayed_until ? ` · 稍后至 ${formatDelayUntil(hw.feedback.delayed_until)}` : ''}
+                      </div>
+                      {taskStatus[hwId] && <div className="task-local-status">{taskStatus[hwId]}</div>}
+
+                      {isCalendarOpen && !calProposal && (
+                        <div className="task-cal-form">
+                          <div className="task-cal-form-row">
+                            <label className="task-cal-label">日期</label>
+                            <input type="date" className="tl-form-input" value={calForm.date} onChange={e => setCalForm(prev => ({ ...prev, date: e.target.value }))} />
+                          </div>
+                          <div className="task-cal-form-row">
+                            <label className="task-cal-label">开始</label>
+                            <input type="time" className="tl-form-input" value={calForm.start} onChange={e => setCalForm(prev => ({ ...prev, start: e.target.value }))} />
+                          </div>
+                          <div className="task-cal-form-row">
+                            <label className="task-cal-label">结束</label>
+                            <input type="time" className="tl-form-input" value={calForm.end} onChange={e => setCalForm(prev => ({ ...prev, end: e.target.value }))} />
+                          </div>
+                          <div className="task-cal-form-row">
+                            <label className="task-cal-label">地点</label>
+                            <input type="text" className="tl-form-input" placeholder="可选" value={calForm.location} onChange={e => setCalForm(prev => ({ ...prev, location: e.target.value }))} />
+                          </div>
+                          <div className="task-cal-form-row">
+                            <label className="task-cal-label">备注</label>
+                            <input type="text" className="tl-form-input" placeholder="可选" value={calForm.note} onChange={e => setCalForm(prev => ({ ...prev, note: e.target.value }))} />
+                          </div>
+                          <div className="task-cal-form-actions">
+                            <button className="task-action-btn primary" onClick={submitCalProposal} disabled={calBusy || !calForm.date || !calForm.start}>
+                              {calBusy ? '创建中...' : '生成提案'}
+                            </button>
+                            <button className="task-action-btn" onClick={closeCalForm}>取消</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {onAction && (
+                      <div className="task-list-actions">
+                        <button className="task-action-btn primary" onClick={() => runHomeworkAction(hw, 'complete_homework')}>
+                          完成
+                        </button>
+                        <details className="task-more-actions">
+                          <summary>更多</summary>
+                          <div>
+                            <button onClick={() => runHomeworkAction(hw, 'delay_homework_30')}>稍后 30 分钟</button>
+                            <button onClick={() => openCalForm(hw)}>安排到日历</button>
+                            <button className="danger" onClick={() => runHomeworkAction(hw, 'skip_homework')}>跳过</button>
+                          </div>
+                        </details>
+                      </div>
+                    )}
+                  </article>
+                )
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
+
       {calProposal && (
         <div className="task-proposal-card">
           <div className="task-proposal-inner">

@@ -216,17 +216,24 @@ export function Overview({ onAction: _onAction }: Props) {
   const financeBudget = data.finance?.monthly_budget ?? 0
   const financeSpend = data.finance?.monthly_spend ?? 0
   const budgetPct = financeBudget > 0 ? Math.min((financeSpend / financeBudget) * 100, 100) : 0
+  const pressurePct = Math.round((data.deadline_pressure?.score ?? 0) * 100)
+  const workloadPct = Math.round((data.workload_density?.score ?? 0) * 100)
+  const urgent = data.active_context?.most_urgent
+  const nextSchedule = data.today_schedule?.[0]
+  const nextCalendar = data.calendar_events?.[0]
 
   return (
-    <div>
-      {/* ── Hero Card ──────────────────────────────────────────── */}
-      <div className="hero-card">
-        <div className="hero-date">{data.today} {data.weekday}</div>
-        <div className="hero-title">今日计划控制台</div>
+    <div className="overview-page">
+      <header className="hero-card">
+        <div className="hero-kicker">TODAY / 今日</div>
+        <div className="hero-date">{data.today} · {data.weekday}</div>
+        <div className="hero-title">
+          {urgent?.course ? `先处理 ${urgent.course}` : '给今天留出清晰的主线'}
+        </div>
         <div className="hero-sub">
-          {data.active_context?.most_urgent
-            ? `紧急: ${data.active_context.most_urgent.course}`
-            : '暂无紧急事项'}
+          {urgent?.title || urgent?.task || (urgent?.course
+            ? '当前最需要关注的课程；从最近截止的作业开始。'
+            : '目前没有需要立刻处理的紧急事项。')}
         </div>
         <div className="hero-stats">
           <div className="hero-stat">
@@ -234,244 +241,303 @@ export function Overview({ onAction: _onAction }: Props) {
             <div className="lbl">待办作业</div>
           </div>
           <div className="hero-stat">
+            <div className="num">{pressurePct}</div>
+            <div className="lbl">压力指数</div>
+          </div>
+          <div className="hero-stat">
+            <div className="num">{workloadPct}</div>
+            <div className="lbl">负荷指数</div>
+          </div>
+          <div className="hero-stat">
             <div className="num">{data.today_schedule?.length || 0}</div>
             <div className="lbl">今日课程</div>
           </div>
-          <div className="hero-stat">
-            <div className="num">{data.calendar_events?.length || 0}</div>
-            <div className="lbl">日历事件</div>
-          </div>
         </div>
-      </div>
+        <div className="hero-source-row">
+          {Object.entries(data.sync_health || {}).map(([key, value]: [string, any]) => (
+            <span className={`hero-source ${value?.status === 'completed' || value?.status === 'ok' ? 'ok' : 'muted'}`} key={key}>
+              {key.replace('_', ' ')}
+            </span>
+          ))}
+        </div>
+      </header>
 
-      {/* ── Today Controls ─────────────────────────────────────── */}
       {notice && (
         <div className={`today-notice ${notice.type}`}>{notice.text}</div>
       )}
 
-      {/* ── Today Controls ─────────────────────────────────────── */}
-      <div className="today-controls">
-        {/* 记录完成 */}
-        <div className="today-card">
-          <div className="today-card-head">✓ 记录完成</div>
-          <form className="today-inline-form" onSubmit={e => { e.preventDefault(); if (compText.trim()) { doAction('completion', { text: compText.trim() }); setCompText('') } }}>
-            <input className="today-input" placeholder="完成了什么？" value={compText} onChange={e => setCompText(e.target.value)} />
-            <button className="today-btn" disabled={!compText.trim() || loading}>记录</button>
-          </form>
-        </div>
-
-        {/* 画画进度 */}
-        <div className="today-card">
-          <div className="today-card-head">🎨 画画进度</div>
-          <form className="today-inline-form" onSubmit={e => { e.preventDefault(); const m = parseInt(artMins); if (m > 0) { doAction('art_progress', { minutes: m, type: artType, note: artNote }); setArtMins(''); setArtNote('') } }}>
-            <input className="today-input today-input-narrow" type="number" min="1" placeholder="分钟" value={artMins} onChange={e => setArtMins(e.target.value)} />
-            <select className="today-select" value={artType} onChange={e => setArtType(e.target.value)}>
-              <option value="练习">练习</option>
-              <option value="创作">创作</option>
-              <option value="临摹">临摹</option>
-              <option value="摸鱼">摸鱼</option>
-            </select>
-            <input className="today-input" placeholder="备注（可选）" value={artNote} onChange={e => setArtNote(e.target.value)} />
-            <button className="today-btn" disabled={!artMins || parseInt(artMins) <= 0 || loading}>记录</button>
-          </form>
-        </div>
-
-        {/* 补水 */}
-        <div className="today-card">
-          <div className="today-card-head">💧 补水</div>
-          <div className="today-inline-form">
-            <div className="today-btn-group">
-              {[250, 500].map(v => (
-                <button key={v} className="today-btn-sm" disabled={loading} onClick={() => doAction('hydration', { amount_ml: v })}>
-                  {v}ml
-                </button>
-              ))}
-            </div>
-            <form className="today-inline-form" onSubmit={e => { e.preventDefault(); const v = parseInt(hydrationCustom); if (v > 0) { doAction('hydration', { amount_ml: v }); setHydrationCustom('') } }}>
-              <input className="today-input today-input-narrow" type="number" min="1" placeholder="自定义" value={hydrationCustom} onChange={e => setHydrationCustom(e.target.value)} />
-              <button className="today-btn" disabled={!hydrationCustom || parseInt(hydrationCustom) <= 0 || loading}>补</button>
-            </form>
+      <section className="overview-now-grid">
+        <div className="focus-card">
+          <div className="focus-card-motion" aria-hidden="true">
+            <span className="focus-motion-square" />
+            <span className="focus-motion-line line-one" />
+            <span className="focus-motion-line line-two" />
+          </div>
+          <div className="focus-card-kicker">现在最重要</div>
+          <div className="focus-card-title">{urgent?.title || urgent?.course || '保持当前节奏'}</div>
+          <div className="focus-card-meta">
+            {urgent?.course
+              ? `${urgent?.title ? urgent.course : '当前最需要关注的课程'}${urgent.deadline ? ` · 截止 ${formatOverviewTime(urgent.deadline)}` : ''}`
+              : '没有紧急事项，可以主动选择今天的核心任务。'}
+          </div>
+          <div className="focus-card-signal">
+            <span>压力 {pressurePct}%</span>
+            <span>负荷 {workloadPct}%</span>
           </div>
         </div>
 
-        {/* 今日状态 */}
-        <div className="today-card">
-          <div className="today-card-head">🧠 今日状态</div>
-          <div className="today-inline-form">
-            <form className="today-inline-form" onSubmit={e => { e.preventDefault(); if (ctxText.trim()) { doAction('context', { text: ctxText.trim() }); setCtxText('') } }}>
-              <input className="today-input" placeholder="今天感觉如何？" value={ctxText} onChange={e => setCtxText(e.target.value)} />
-              <button className="today-btn" disabled={!ctxText.trim() || loading}>记录</button>
+        <div className="next-card">
+          <div className="next-card-kicker">接下来</div>
+          <div className="next-card-row">
+            <span className="next-card-time">{nextSchedule?.start || '—'}</span>
+            <div>
+              <div className="next-card-title">{nextSchedule?.course || '今天没有课程'}</div>
+              <div className="next-card-meta">{nextSchedule?.end ? `至 ${nextSchedule.end}` : '课程表保持清空'}</div>
+            </div>
+          </div>
+          <div className="next-card-row">
+            <span className="next-card-time">{formatOverviewTime(nextCalendar?.start)}</span>
+            <div>
+              <div className="next-card-title">{nextCalendar?.summary || '没有日历事件'}</div>
+              <div className="next-card-meta">{nextCalendar?.location || 'Google Calendar'}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="page-section">
+        <div className="page-section-head">
+          <div>
+            <div className="section-eyebrow">TODAY'S FLOW</div>
+            <h2>今日脉络</h2>
+          </div>
+          <span>来自课表、作业与日历</span>
+        </div>
+        <div className="overview-flow-grid">
+          <div className="card overview-flow-card">
+            <h3>课程</h3>
+            {data.today_schedule?.length > 0 ? (
+              data.today_schedule.map((schedule: any, index: number) => (
+                <div className="overview-flow-row" key={`${schedule.course}-${index}`}>
+                  <span>{schedule.start}–{schedule.end}</span>
+                  <strong>{schedule.course}</strong>
+                </div>
+              ))
+            ) : (
+              <div className="empty-copy">今日没有课程。</div>
+            )}
+          </div>
+
+          <div className="card overview-flow-card overview-homework-card">
+            <h3>最近作业</h3>
+            {data.homework?.length > 0 ? (
+              <div className="overview-task-list">
+                {data.homework.slice(0, 3).map((hw: any, i: number) => (
+                  <div className="overview-task-item" key={hw.id || hw.title || i}>
+                    <div className="overview-task-main">
+                      <span className="overview-task-title">{hw.title}</span>
+                      <span className="overview-task-meta">{hw.course} · {hw.deadline?.slice(5, 10) || '无期限'}</span>
+                    </div>
+                    <div className="overview-task-actions">
+                      <button className="primary" disabled={loading} onClick={() => runHomeworkAction(hw, 'complete')}>完成</button>
+                      <button disabled={loading} onClick={() => runHomeworkAction(hw, 'delay_30')}>稍后</button>
+                    </div>
+                  </div>
+                ))}
+                {data.homework.length > 3 && (
+                  <div className="overview-task-more">另有 {data.homework.length - 3} 项待处理</div>
+                )}
+              </div>
+            ) : (
+              <div className="empty-copy">{homeworkEmptyText(data.homework_empty_reason)}</div>
+            )}
+          </div>
+
+          <div className="card overview-flow-card">
+            <h3>日历</h3>
+            {data.calendar_events?.length > 0 ? (
+              data.calendar_events.slice(0, 4).map((event: any, index: number) => (
+                <div className="overview-flow-row" key={`${event.summary}-${index}`}>
+                  <span>{formatOverviewTime(event.start)}</span>
+                  <strong>{event.summary}</strong>
+                </div>
+              ))
+            ) : (
+              <div className="empty-copy">今天没有日历事件。</div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <details className="capture-panel">
+        <summary>
+          <div>
+            <div className="section-eyebrow">QUICK CAPTURE</div>
+            <strong>快速记录与安排</strong>
+            <span>完成事项、画画、补水、状态和日历提案</span>
+          </div>
+          <span className="capture-panel-symbol">＋</span>
+        </summary>
+        <div className="today-controls">
+          <div className="today-card">
+            <div className="today-card-head">记录完成</div>
+            <form className="today-inline-form" onSubmit={e => { e.preventDefault(); if (compText.trim()) { doAction('completion', { text: compText.trim() }); setCompText('') } }}>
+              <input className="today-input" placeholder="完成了什么？" value={compText} onChange={e => setCompText(e.target.value)} />
+              <button className="today-btn" disabled={!compText.trim() || loading}>记录</button>
             </form>
-            <button className="today-btn today-btn-warn" disabled={loading} onClick={() => doAction('context', { text: '今天状态差' })}>
-              状态差
+          </div>
+
+          <div className="today-card">
+            <div className="today-card-head">画画进度</div>
+            <form className="today-inline-form" onSubmit={e => { e.preventDefault(); const m = parseInt(artMins); if (m > 0) { doAction('art_progress', { minutes: m, type: artType, note: artNote }); setArtMins(''); setArtNote('') } }}>
+              <input className="today-input today-input-narrow" type="number" min="1" placeholder="分钟" value={artMins} onChange={e => setArtMins(e.target.value)} />
+              <select className="today-select" value={artType} onChange={e => setArtType(e.target.value)}>
+                <option value="练习">练习</option>
+                <option value="创作">创作</option>
+                <option value="临摹">临摹</option>
+                <option value="摸鱼">摸鱼</option>
+              </select>
+              <input className="today-input" placeholder="备注（可选）" value={artNote} onChange={e => setArtNote(e.target.value)} />
+              <button className="today-btn" disabled={!artMins || parseInt(artMins) <= 0 || loading}>记录</button>
+            </form>
+          </div>
+
+          <div className="today-card">
+            <div className="today-card-head">补水</div>
+            <div className="today-inline-form">
+              <div className="today-btn-group">
+                {[250, 500].map(v => (
+                  <button key={v} className="today-btn-sm" disabled={loading} onClick={() => doAction('hydration', { amount_ml: v })}>
+                    {v}ml
+                  </button>
+                ))}
+              </div>
+              <form className="today-inline-form" onSubmit={e => { e.preventDefault(); const v = parseInt(hydrationCustom); if (v > 0) { doAction('hydration', { amount_ml: v }); setHydrationCustom('') } }}>
+                <input className="today-input today-input-narrow" type="number" min="1" placeholder="自定义" value={hydrationCustom} onChange={e => setHydrationCustom(e.target.value)} />
+                <button className="today-btn" disabled={!hydrationCustom || parseInt(hydrationCustom) <= 0 || loading}>补</button>
+              </form>
+            </div>
+          </div>
+
+          <div className="today-card">
+            <div className="today-card-head">今日状态</div>
+            <div className="today-inline-form">
+              <form className="today-inline-form" onSubmit={e => { e.preventDefault(); if (ctxText.trim()) { doAction('context', { text: ctxText.trim() }); setCtxText('') } }}>
+                <input className="today-input" placeholder="今天感觉如何？" value={ctxText} onChange={e => setCtxText(e.target.value)} />
+                <button className="today-btn" disabled={!ctxText.trim() || loading}>记录</button>
+              </form>
+              <button className="today-btn today-btn-warn" disabled={loading} onClick={() => doAction('context', { text: '今天状态差' })}>
+                状态差
+              </button>
+            </div>
+          </div>
+
+          <div className="today-card today-calendar-card">
+            <div className="today-card-head">安排到日历</div>
+            {calProposal ? (
+              <div className="today-proposal-card">
+                <div className="today-proposal-title">{calProposal.action_payload?.title || '未命名'}</div>
+                <div className="today-proposal-time">
+                  {calProposal.action_payload?.start ? new Date(calProposal.action_payload.start).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : ''}
+                  {calProposal.action_payload?.end ? ` — ${new Date(calProposal.action_payload.end).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}` : ''}
+                </div>
+                <div className="today-proposal-note">尚未写入日历，需要确认。</div>
+                <div className="today-proposal-actions">
+                  <button className="today-btn today-btn-primary" onClick={() => handleCalDecision('accept')} disabled={calDeciding}>
+                    {calDeciding ? '写入中...' : '接受并写入'}
+                  </button>
+                  <button className="today-btn today-btn-warn" onClick={() => handleCalDecision('reject')} disabled={calDeciding}>
+                    拒绝
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form className="today-inline-form today-cal-form" onSubmit={handleCalSubmit}>
+                <input className="today-input" placeholder="标题" value={calTitle} onChange={e => setCalTitle(e.target.value)} required />
+                <div className="today-cal-row">
+                  <input className="today-input" type="date" value={calDate} onChange={e => setCalDate(e.target.value)} required />
+                  <input className="today-input today-input-narrow" type="time" value={calStart} onChange={e => setCalStart(e.target.value)} required />
+                  <input className="today-input today-input-narrow" type="time" value={calEnd} onChange={e => setCalEnd(e.target.value)} placeholder="结束" />
+                </div>
+                <div className="today-cal-row">
+                  <input className="today-input" placeholder="地点（可选）" value={calLoc} onChange={e => setCalLoc(e.target.value)} />
+                  <input className="today-input" placeholder="备注（可选）" value={calNote} onChange={e => setCalNote(e.target.value)} />
+                </div>
+                <button className="today-btn" type="submit" disabled={!calTitle || !calDate || !calStart || loading}>创建提案</button>
+              </form>
+            )}
+          </div>
+
+          <div className="today-card today-card-action">
+            <div className="today-card-head">数据源</div>
+            <button className="today-btn today-btn-sync" disabled={loading} onClick={() => doAction('sync_refresh', {})}>
+              同步刷新
             </button>
           </div>
         </div>
+      </details>
 
-        {/* 快速安排到日历 */}
-        <div className="today-card">
-          <div className="today-card-head">📅 快速安排到日历</div>
-          {calProposal ? (
-            <div className="today-proposal-card">
-              <div className="today-proposal-title">{calProposal.action_payload?.title || '未命名'}</div>
-              <div className="today-proposal-time">
-                {calProposal.action_payload?.start ? new Date(calProposal.action_payload.start).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : ''}
-                {calProposal.action_payload?.end ? ` — ${new Date(calProposal.action_payload.end).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}` : ''}
-              </div>
-              <div className="today-proposal-note">尚未写入日历，需要确认。</div>
-              <div className="today-proposal-actions">
-                <button className="today-btn today-btn-primary" onClick={() => handleCalDecision('accept')} disabled={calDeciding}>
-                  {calDeciding ? '写入中...' : '接受并写入'}
-                </button>
-                <button className="today-btn today-btn-warn" onClick={() => handleCalDecision('reject')} disabled={calDeciding}>
-                  拒绝
-                </button>
-              </div>
-            </div>
-          ) : (
-            <form className="today-inline-form today-cal-form" onSubmit={handleCalSubmit}>
-              <input className="today-input" placeholder="标题" value={calTitle} onChange={e => setCalTitle(e.target.value)} required />
-              <div className="today-cal-row">
-                <input className="today-input" type="date" value={calDate} onChange={e => setCalDate(e.target.value)} required />
-                <input className="today-input today-input-narrow" type="time" value={calStart} onChange={e => setCalStart(e.target.value)} required />
-                <input className="today-input today-input-narrow" type="time" value={calEnd} onChange={e => setCalEnd(e.target.value)} placeholder="结束" />
-              </div>
-              <div className="today-cal-row">
-                <input className="today-input" placeholder="地点（可选）" value={calLoc} onChange={e => setCalLoc(e.target.value)} />
-                <input className="today-input" placeholder="备注（可选）" value={calNote} onChange={e => setCalNote(e.target.value)} />
-              </div>
-              <button className="today-btn" type="submit" disabled={!calTitle || !calDate || !calStart || loading}>创建提案</button>
-            </form>
-          )}
+      <section className="page-section">
+        <div className="page-section-head">
+          <div>
+            <div className="section-eyebrow">LIFE AREAS</div>
+            <h2>领域状态</h2>
+          </div>
+          <span>只显示需要留意的信号</span>
         </div>
-
-        {/* 同步刷新 */}
-        <div className="today-card today-card-action">
-          <button className="today-btn today-btn-sync" disabled={loading} onClick={() => doAction('sync_refresh', {})}>
-            ↻ 同步刷新
-          </button>
-        </div>
-      </div>
-
-      {/* ── 今日安排 ───────────────────────────────────────────── */}
-      <div className="section-label" style={{ marginTop: 20, marginBottom: 10 }}>今日安排</div>
-      <div className="cards-grid">
+        <div className="area-card-grid">
         {data.art?.planned_minutes != null && (
-          <div className="card">
-            <h3>🎨 艺术创作</h3>
-            <div className="stat-row">
-              <span className="label">计划</span>
-              <span className="value">{data.art.planned_minutes} 分钟</span>
+          <div className="card area-card art">
+            <div>
+              <div className="area-card-kicker">ART</div>
+              <h3>艺术创作</h3>
             </div>
-            <div className="stat-row">
-              <span className="label">完成</span>
-              <span className="value">{data.art.completed_minutes || 0} 分钟</span>
-            </div>
+            <strong>{data.art.completed_minutes || 0}<small> / {data.art.planned_minutes} 分钟</small></strong>
           </div>
         )}
 
-        <div className="card">
-          <h3>📚 课程表</h3>
-          {data.today_schedule?.length > 0 ? (
-            data.today_schedule.map((s: any, i: number) => (
-              <div className="stat-row" key={i}>
-                <span className="label">{s.course}</span>
-                <span className="value">{s.start}–{s.end}</span>
-              </div>
-            ))
-          ) : (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>今日无课程</div>
-          )}
-        </div>
-
-        {data.calendar_events?.length > 0 && (
-          <div className="card">
-            <h3>📅 日历</h3>
-            {data.calendar_events.map((e: any, i: number) => (
-              <div className="stat-row" key={i}>
-                <span className="label">{e.summary}</span>
-                <span className="value">{e.start}</span>
-              </div>
-            ))}
+        <div className="card area-card fitness">
+          <div>
+            <div className="area-card-kicker">FITNESS</div>
+            <h3>训练</h3>
           </div>
-        )}
-
-        <div className="card">
-          <h3>📝 作业</h3>
-          {data.homework?.length > 0 ? (
-            <div className="overview-task-list">
-              {data.homework.slice(0, 5).map((hw: any, i: number) => (
-                <div className="overview-task-item" key={hw.id || hw.title || i}>
-                  <div className="overview-task-main">
-                    <span className="overview-task-title">{hw.course}: {hw.title}</span>
-                    <span className="overview-task-meta">{hw.deadline?.slice(5, 10) || '无期限'}</span>
-                  </div>
-                  <div className="overview-task-actions">
-                    <button disabled={loading} onClick={() => runHomeworkAction(hw, 'complete')}>完成</button>
-                    <button disabled={loading} onClick={() => runHomeworkAction(hw, 'delay_30')}>稍后</button>
-                    <button disabled={loading} onClick={() => runHomeworkAction(hw, 'skip')}>跳过</button>
-                  </div>
-                </div>
-              ))}
-              {data.homework.length > 5 && (
-                <div className="overview-task-more">还有 {data.homework.length - 5} 项，去任务页批量处理。</div>
-              )}
-              </div>
-          ) : (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>
-              {homeworkEmptyText(data.homework_empty_reason)}
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <h3>💪 健身</h3>
-          {data.fitness?.training_day ? (
-            <>
-              <div className="stat-row">
-                <span className="label">训练日</span>
-                <span className="value">{data.fitness.training_day}</span>
-              </div>
-              <div className="stat-row">
-                <span className="label">完成</span>
-                <span className="value">{data.fitness.completed_sets}/{data.fitness.total_sets}</span>
-              </div>
-              <Ring pct={fitnessPct} size={48} />
-            </>
-          ) : (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>今日未训练</div>
-          )}
-        </div>
-
-        <div className="card">
-          <h3>💰 财务</h3>
-          <Ring pct={budgetPct} size={48} color="gold" />
-          <div className="stat-row">
-            <span className="label">已用预算</span>
-            <span className="value">¥{financeSpend}/¥{financeBudget}</span>
+          <div className="area-card-ring">
+            <Ring pct={fitnessPct} size={54} color="green" />
+            <strong>{fitnessPct}%</strong>
           </div>
-          {data.finance?.savings_target > 0 && (
-            <div className="stat-row">
-              <span className="label">储蓄</span>
-              <span className="value">¥{data.finance.savings_progress || 0}/¥{data.finance.savings_target}</span>
-            </div>
-          )}
         </div>
 
-        <div className="card">
-          <h3>📖 单词</h3>
-          {vocabCount > 0 ? (
-            <div className="stat-row">
-              <span className="label">学习中</span>
-              <span className="value">{vocabCount} 组</span>
-            </div>
-          ) : (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)' }}>暂无单词数据</div>
-          )}
+        <div className="card area-card finance">
+          <div>
+            <div className="area-card-kicker">FINANCE</div>
+            <h3>本月预算</h3>
+          </div>
+          <strong>¥{financeSpend}<small> / ¥{financeBudget}</small></strong>
+          <div className="area-card-progress"><span style={{ width: `${budgetPct}%` }} /></div>
         </div>
-      </div>
+
+        <div className="card area-card learning">
+          <div>
+            <div className="area-card-kicker">LEARNING</div>
+            <h3>词汇进度</h3>
+          </div>
+          <strong>{vocabCount}<small> 组学习中</small></strong>
+        </div>
+        </div>
+      </section>
     </div>
   )
+}
+
+function formatOverviewTime(value?: string) {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value.slice(0, 5)
+  return date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
 }
 
 function defaultCalendarFormTime() {
