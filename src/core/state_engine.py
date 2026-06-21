@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -953,7 +953,10 @@ class StateEngine:
         for key, block in self._temporal_blocks.items():
             if key not in effective_block_keys:
                 continue
-            day = block.start.date().isoformat()
+            local_start = block.start
+            if str(block.source) == "google_calendar" and block.start.tzinfo is not None:
+                local_start = block.start.astimezone(timezone(timedelta(hours=8)))
+            day = local_start.date().isoformat()
             by_day.setdefault(day, []).append(key)
             hours = max((block.end - block.start).total_seconds() / 3600.0, 0.0)
             if str(block.block_type) != "free_slot" and hours > 0:
