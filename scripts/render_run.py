@@ -68,6 +68,16 @@ async def main():
     bus.subscribe(EventType.CONNECTOR_FETCH_REQUESTED, jwxt.handle_fetch_request)
     logger.info("jwxt connector subscribed, mock=%s", settings.jwxt_mock)
 
+    # Wire Chaoxing connector for homework sync
+    from src.connector.chaoxing.client import ChaoxingConnector
+    chaoxing = ChaoxingConnector(
+        use_mock=settings.chaoxing_mock,
+        state_file=settings.chaoxing_state_file,
+        settings=settings,
+    )
+    bus.subscribe(EventType.CONNECTOR_FETCH_REQUESTED, chaoxing.handle_fetch_request)
+    logger.info("chaoxing connector subscribed, mock=%s", settings.chaoxing_mock)
+
     # Build app
     app = runtime.app
     if app is None:
