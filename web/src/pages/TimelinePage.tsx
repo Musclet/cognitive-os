@@ -23,7 +23,11 @@ function fmtLocalTime(d: Date): string {
 
 function fmtTime(iso: string | undefined): string {
   if (!iso) return ''
-  if (iso.includes('T')) return iso.slice(11, 16)
+  if (iso.includes('T')) {
+    const parsed = new Date(iso)
+    if (!Number.isNaN(parsed.getTime())) return fmtLocalTime(parsed)
+    return iso.slice(11, 16)
+  }
   return iso
 }
 
@@ -41,6 +45,8 @@ function parseDateInput(value: string | undefined): Date {
 
 function parseISODate(iso: string | undefined): string {
   if (!iso) return ''
+  const parsed = new Date(iso)
+  if (!Number.isNaN(parsed.getTime())) return fmtDate(parsed)
   return iso.slice(0, 10)
 }
 
@@ -258,7 +264,7 @@ export function TimelinePage() {
     if (!ev.event_id) return
     setEditingEvent({ event_id: ev.event_id, calendar_id: ev.calendar_id || 'primary' })
     setFormTitle(ev.title || '')
-    setFormDate(data?.date || todayStr())
+    setFormDate(parseISODate(ev.start) || data?.date || todayStr())
     setFormStart(fmtTime(ev.start))
     setFormEnd(fmtTime(ev.end))
     setFormLocation(ev.location || '')

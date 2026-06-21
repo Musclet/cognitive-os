@@ -585,6 +585,100 @@ class TestTimeline:
         assert len(data["events"]) == 1
         assert data["events"][0]["source"] == "jwxt"
 
+    def test_timeline_reads_latest_jwxt_temporal_blocks(self, client: TestClient, app: FastAPI):
+        """A successful JWXT connector sync appears in Time without legacy schedule state."""
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        start = datetime(2026, 6, 22, 10, 10, tzinfo=local_tz)
+        block = TimeBlock(
+            block_id="jwxt-latest-class",
+            source=TemporalSource.JWXT,
+            block_type=TimeBlockType.CLASS_LECTURE,
+            start=start,
+            end=start + timedelta(hours=1, minutes=40),
+            title="毕业设计",
+            location="敷文园D102",
+            metadata={"teacher": "指导老师"},
+        )
+        block_key = "|".join([
+            str(block.source),
+            block.title,
+            block.start.isoformat(),
+            block.end.isoformat(),
+        ])
+        engine = app.state.state_engine
+        engine._state = {}
+        engine._temporal_blocks_by_day = {"2026-06-22": [block_key]}
+        engine._temporal_blocks = {block_key: block}
+
+        cookie = self._login(client)
+        resp = client.get(
+            "/api/web/timeline?date_str=2026-06-22",
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        events = resp.json()["events"]
+        assert len(events) == 1
+        assert events[0]["source"] == "jwxt"
+        assert events[0]["title"] == "毕业设计"
+        assert events[0]["start"] == "2026-06-22T10:10:00+08:00"
+        assert events[0]["teacher"] == "指导老师"
+
+    def test_timeline_dedupes_legacy_and_temporal_jwxt(self, client: TestClient, app: FastAPI):
+        """The same JWXT class is not shown twice when both state views exist."""
+        from datetime import datetime, timedelta, timezone
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        local_tz = timezone(timedelta(hours=8))
+        start = datetime(2026, 6, 22, 10, 10, tzinfo=local_tz)
+        block = TimeBlock(
+            block_id="jwxt-dedup-class",
+            source=TemporalSource.JWXT,
+            block_type=TimeBlockType.CLASS_LECTURE,
+            start=start,
+            end=start + timedelta(hours=1, minutes=40),
+            title="毕业设计",
+            location="敷文园D102",
+            metadata={"teacher": "指导老师"},
+        )
+        block_key = "|".join([
+            str(block.source),
+            block.title,
+            block.start.isoformat(),
+            block.end.isoformat(),
+        ])
+        engine = app.state.state_engine
+        engine._state = {
+            "schedule": {
+                "2026-06-22": [{
+                    "course": "毕业设计",
+                    "start": "10:10",
+                    "end": "11:50",
+                    "location": "敷文园D102",
+                }],
+            },
+        }
+        engine._temporal_blocks_by_day = {"2026-06-22": [block_key]}
+        engine._temporal_blocks = {block_key: block}
+
+        cookie = self._login(client)
+        resp = client.get(
+            "/api/web/timeline?date_str=2026-06-22",
+            cookies={COOKIE_NAME: cookie},
+        )
+
+        assert resp.status_code == 200
+        classes = [
+            event
+            for event in resp.json()["events"]
+            if event["source"] == "jwxt" and event["title"] == "毕业设计"
+        ]
+        assert len(classes) == 1
+        assert classes[0]["teacher"] == "指导老师"
+
     def test_timeline_with_homework_deadline(self, client: TestClient, app: FastAPI):
         app.state.state_engine._state = {
             "homework": {
@@ -1462,6 +1556,44 @@ class TestCalendarProposal:
         assert len(cal_events) >= 1
         found = any(e.get("event_id") == "gcal-event-001" and e.get("calendar_id") == "primary" for e in cal_events)
         assert found, f"Expected event_id=gcal-event-001 in google_calendar events: {cal_events}"
+
+    def test_timeline_returns_google_event_in_local_timezone(self, client: TestClient, app: FastAPI):
+        """Timeline returns Google event timestamps in the app's UTC+8 timezone."""
+        from datetime import datetime, timezone, timedelta
+        from src.core.temporal import TemporalSource, TimeBlock, TimeBlockType
+
+        start = datetime(2026, 6, 22, 6, 30, tzinfo=timezone.utc)
+        block = TimeBlock(
+            block_id="local-time-block",
+            source=TemporalSource.GOOGLE_CALENDAR,
+            block_type=TimeBlockType.MEETING_BLOCK,
+            start=start,
+            end=start + timedelta(hours=1, minutes=30),
+            title="毕设会议",
+            metadata={
+                "external_source": "google_calendar",
+                "external_id": "gcal-local-time-001",
+                "calendar_id": "primary",
+            },
+        )
+        day_key = "2026-06-22"
+        block_key = "|".join(["google_calendar", block.title, block.start.isoformat(), block.end.isoformat()])
+
+        engine = app.state.state_engine
+        engine._temporal_blocks_by_day = {day_key: [block_key]}
+        engine._temporal_blocks = {block_key: block}
+
+        cookie = self._login(client)
+        resp = client.get(f"/api/web/timeline?date_str={day_key}", cookies={COOKIE_NAME: cookie})
+
+        assert resp.status_code == 200
+        event = next(
+            item
+            for item in resp.json()["events"]
+            if item.get("event_id") == "gcal-local-time-001"
+        )
+        assert event["start"] == "2026-06-22T14:30:00+08:00"
+        assert event["end"] == "2026-06-22T16:00:00+08:00"
 
     def test_create_returns_conflicts_for_overlapping_jwxt(self, client: TestClient, app: FastAPI):
         """Create proposal returns conflicts when overlapping a JWXT class."""

@@ -1076,6 +1076,23 @@ def _legacy_detect_conflicts(
 # ── Timeline endpoint ─────────────────────────────────────────────────────────
 
 
+def _timeline_local_iso(value: Any) -> str:
+    """Normalize a timeline datetime to the app's UTC+8 display timezone."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "")
+        if not text or "T" not in text:
+            return text
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ).isoformat()
+
+
 @router.get("/api/web/timeline")
 async def web_timeline(request: Request, date_str: str | None = None):
     """Return timeline events for a given date (default today)."""
@@ -1115,14 +1132,16 @@ async def web_timeline(request: Request, date_str: str | None = None):
                     "source": "google_calendar",
                     "type": "event",
                     "title": ev.get("summary", "事件"),
-                    "start": ev.get("start", ev.get("start_time", "")),
-                    "end": ev.get("end", ev.get("end_time", "")),
+                    "start": _timeline_local_iso(ev.get("start", ev.get("start_time", ""))),
+                    "end": _timeline_local_iso(ev.get("end", ev.get("end_time", ""))),
                     "location": ev.get("location", ""),
                     "event_id": ev.get("event_id", ev.get("id", "")),
                     "calendar_id": ev.get("calendar_id", ""),
                 })
 
-    # Also read calendar events from temporal blocks (richer metadata with event_id)
+    # Also read current JWXT/Google events from temporal blocks. Connector
+    # syncs update this layer atomically, so the timeline reflects the newest
+    # successful schedule immediately.
     temporal_blocks_by_day = getattr(engine, "_temporal_blocks_by_day", {})
     temporal_blocks = getattr(engine, "_temporal_blocks", {})
     day_block_keys = temporal_blocks_by_day.get(d.isoformat(), [])
@@ -1131,7 +1150,7 @@ async def web_timeline(request: Request, date_str: str | None = None):
         if block is None:
             continue
         block_source = str(getattr(block, "source", ""))
-        if block_source != "google_calendar":
+        if block_source not in {"google_calendar", "jwxt"}:
             continue
         meta = getattr(block, "metadata", {}) or {}
         block_title = getattr(block, "title", "事件")
@@ -1140,14 +1159,15 @@ async def web_timeline(request: Request, date_str: str | None = None):
         event_id = meta.get("external_id", "")
         calendar_id = meta.get("calendar_id", "")
         events.append({
-            "source": "google_calendar",
-            "type": "event",
+            "source": block_source,
+            "type": "class" if block_source == "jwxt" else "event",
             "title": block_title,
-            "start": block_start.isoformat() if hasattr(block_start, "isoformat") else str(block_start),
-            "end": block_end.isoformat() if hasattr(block_end, "isoformat") else str(block_end),
+            "start": _timeline_local_iso(block_start),
+            "end": _timeline_local_iso(block_end),
             "location": block.location if hasattr(block, "location") else "",
-            "event_id": event_id,
-            "calendar_id": calendar_id,
+            "teacher": meta.get("teacher", ""),
+            "event_id": event_id if block_source == "google_calendar" else "",
+            "calendar_id": calendar_id if block_source == "google_calendar" else "",
         })
 
     # 3. Temporal blocks (system plan blocks)
@@ -1212,27 +1232,42 @@ async def web_timeline(request: Request, date_str: str | None = None):
     return {"date": d.isoformat(), "count": len(events), "events": events}
 
 
-def _dedupe_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Remove duplicate timeline entries from overlapping calendar sources.
+def _timeline_clock(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if "T" not in text:
+        return text[:5]
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ).strftime("%H:%M")
 
-    Google Calendar events may be visible through both legacy ``state["calendar"]``
-    and richer temporal blocks. Prefer the entry carrying event_id/calendar_id
-    because it unlocks Web edit/delete controls.
+
+def _dedupe_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove duplicate JWXT/Google entries from legacy and temporal views.
+
+    Connector events may be visible through both legacy state and richer
+    temporal blocks. Prefer the richer temporal copy, especially the Google
+    entry carrying event_id/calendar_id for Web edit/delete controls.
     """
     deduped: list[dict[str, Any]] = []
     index_by_key: dict[tuple[Any, ...], int] = {}
 
     for event in events:
-        if event.get("source") != "google_calendar":
+        source = event.get("source")
+        if source not in {"google_calendar", "jwxt"}:
             deduped.append(event)
             continue
 
         key = (
-            "google_calendar",
-            event.get("calendar_id") or "primary",
+            source,
             event.get("title") or "",
-            event.get("start") or "",
-            event.get("end") or "",
+            _timeline_clock(event.get("start")),
+            _timeline_clock(event.get("end")),
             event.get("location") or "",
         )
         old_index = index_by_key.get(key)
@@ -1242,7 +1277,10 @@ def _dedupe_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
 
         old_event = deduped[old_index]
-        if event.get("event_id") and not old_event.get("event_id"):
+        if (
+            (event.get("event_id") and not old_event.get("event_id"))
+            or (event.get("teacher") and not old_event.get("teacher"))
+        ):
             deduped[old_index] = event
 
     return deduped
