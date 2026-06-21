@@ -7,7 +7,13 @@ services:
     buildCommand: pip install -e . && cd web && npm install && npm run build && cd ..
     startCommand: python scripts/render_run.py
     plan: free
+    disk:
+      name: cognitive-os-data
+      mountPath: /var/data/cognitive-os
+      sizeGB: 1
     envVars:
+      - key: DATA_DIR
+        value: /var/data/cognitive-os
       - key: DATABASE_URL
         sync: false
       - key: SNAPSHOT_PATH
@@ -24,10 +30,26 @@ services:
         value: "https://cognitive-os.onrender.com"
       - key: GOOGLE_CALENDAR_MOCK
         value: "false"
+      - key: GOOGLE_CALENDAR_WRITE_ENABLED
+        value: "true"
+      - key: GOOGLE_CALENDAR_WRITE_REQUIRES_ACCEPTANCE
+        value: "true"
       - key: GOOGLE_CALENDAR_SCHEDULE_WRITE_ENABLED
         value: "false"
-      - key: CHAOXING_MOCK
+      - key: GOOGLE_CALENDAR_CREDENTIALS_JSON
+        sync: false
+      - key: GOOGLE_CALENDAR_TOKEN_JSON
+        sync: false
+      - key: GOOGLE_CALENDAR_CALENDAR_ID
+        value: "primary"
+      - key: GOOGLE_CALENDAR_TIMEZONE
+        value: "Asia/Shanghai"
+      - key: RENDER_ADMIN_IMPORT_ENABLED
         value: "true"
+      - key: RENDER_ADMIN_IMPORT_TOKEN
+        generateValue: true
+      - key: CHAOXING_MOCK
+        value: "false"
       - key: JWXT_MOCK
         value: "false"
       - key: JWXT_COOKIES_JSON
@@ -36,6 +58,10 @@ services:
         value: "false"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      - key: SCHEDULE_DAILY_SYNC_TIMES
+        value: "07:00"
+      - key: SCHEDULE_SYNC_INTERVAL_HOURS
+        value: "0"
 
   - type: worker
     name: cognitive-os-worker

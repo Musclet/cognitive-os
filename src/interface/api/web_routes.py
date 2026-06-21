@@ -14,8 +14,11 @@ import logging
 import os
 import re
 import secrets
+import shutil
+import tempfile
 from base64 import b64decode, b64encode
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -4286,6 +4289,28 @@ async def web_status(request: Request):
         except Exception:
             pass
 
+    # Data-dir health (booleans only, no file content)
+    data_dir_info: dict[str, Any] = {"configured": False}
+    if settings:
+        dd = str(getattr(settings, "data_dir", ""))
+        if dd:
+            dd_path = Path(dd)
+            data_dir_info = {
+                "configured": True,
+                "path": str(dd_path),
+                "exists": dd_path.is_dir(),
+                "writable": os.access(str(dd_path), os.W_OK) if dd_path.is_dir() else False,
+                "jwxt_cookie_exists": Path(
+                    str(getattr(settings, "jwxt_cookies_path", ""))
+                ).is_file(),
+                "chaoxing_state_exists": Path(
+                    str(getattr(settings, "chaoxing_state_file", ""))
+                ).is_file(),
+                "google_token_exists": Path(
+                    str(getattr(settings, "google_calendar_token_path", ""))
+                ).is_file(),
+            }
+
     return {
         "ok": True,
         "event_count": event_count,
@@ -4293,6 +4318,105 @@ async def web_status(request: Request):
         "state_hash": state_hash,
         "bus_subscribers": bus_subscribers,
         "settings": settings_info,
+        "data_dir": data_dir_info,
         "worker": worker_info,
         "sync_health": sync_health,
     }
+
+
+# ── Admin file import (disabled by default) ────────────────────────────
+
+ALLOWED_IMPORT_KINDS: dict[str, str] = {
+    "jwxt_cookies": "jwxt_cookies_path",
+    "chaoxing_state": "chaoxing_state_file",
+    "google_token": "google_calendar_token_path",
+    "google_credentials": "google_calendar_credentials_path",
+}
+
+MAX_IMPORT_SIZE_BYTES = 512 * 1024  # 512 KB
+
+
+@router.post("/api/web/admin/import")
+async def web_admin_import(request: Request):
+    """Admin-only secure file import for Render persistent disk.
+
+    Disabled by default (``RENDER_ADMIN_IMPORT_ENABLED=true``).
+    Requires a valid admin token in the ``X-Admin-Token`` header.
+
+    Accepts JSON: ``{"kind": "<kind>", "data": <json-value>}`` where
+    *kind* is one of ``jwxt_cookies``, ``chaoxing_state``, ``google_token``,
+    ``google_credentials``.
+
+    Returns only a safe summary: never echoes file content.
+    """
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None:
+        raise HTTPException(500, "settings not available")
+
+    if not bool(getattr(settings, "render_admin_import_enabled", False)):
+        raise HTTPException(403, "admin import is disabled")
+
+    admin_token = str(getattr(settings, "render_admin_import_token", "")).strip()
+    if not admin_token:
+        raise HTTPException(403, "admin import token not configured")
+
+    req_token = str(request.headers.get("x-admin-token", "")).strip()
+    if not req_token or not hmac.compare_digest(req_token, admin_token):
+        raise HTTPException(403, "invalid admin token")
+
+    try:
+        body = json.loads(await request.body())
+    except json.JSONDecodeError:
+        raise HTTPException(400, "invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "body must be a JSON object")
+
+    kind = str(body.get("kind", "")).strip()
+    if kind not in ALLOWED_IMPORT_KINDS:
+        raise HTTPException(400, f"unknown kind; allowed: {', '.join(sorted(ALLOWED_IMPORT_KINDS))}")
+
+    data = body.get("data")
+    if data is None:
+        raise HTTPException(400, "missing 'data' field")
+
+    json_text = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    if len(json_text.encode("utf-8")) > MAX_IMPORT_SIZE_BYTES:
+        raise HTTPException(413, f"file too large (max {MAX_IMPORT_SIZE_BYTES} bytes)")
+
+    setting_attr = ALLOWED_IMPORT_KINDS[kind]
+    dest_path_str = str(getattr(settings, setting_attr, ""))
+    if not dest_path_str:
+        raise HTTPException(500, f"destination path not configured for {kind}")
+    dest = Path(dest_path_str)
+
+    # Atomic write with backup
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            backup = dest.with_suffix(dest.suffix + ".bak")
+            shutil.copy2(str(dest), str(backup))
+
+        fd, tmp = tempfile.mkstemp(dir=str(dest.parent), prefix=".import-", suffix=".tmp")
+        try:
+            os.write(fd, json_text.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp, str(dest))
+
+        size = len(json_text.encode("utf-8"))
+        logger.info(
+            "admin import: kind=%s path=%s size=%d",
+            kind, str(dest), size,
+        )
+        return {
+            "ok": True,
+            "saved": True,
+            "kind": kind,
+            "path_basename": dest.name,
+            "size_bytes": size,
+            "json_valid": True,
+            "no_secret_printed": True,
+        }
+    except OSError as exc:
+        logger.exception("admin import write error for %s", kind)
+        raise HTTPException(500, f"write error: {exc}") from exc
