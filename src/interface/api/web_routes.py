@@ -40,6 +40,7 @@ from src.domain.undo.commands import build_finance_revert_events
 from src.interface.api.schemas.calendar import CalendarProposalResponse
 from src.interface.api.schemas.dashboard import DashboardResponse
 from src.interface.api.schemas.finance import FinanceActionResponse, FinanceRevertResponse
+from src.services.cloud_sync import CloudSyncInProgress, CloudSyncService
 
 logger = logging.getLogger(__name__)
 
@@ -2906,6 +2907,40 @@ async def web_system_action(request: Request, body: dict):
     metadata = _web_event_metadata(user_id, trace_id)
     events_to_publish: list[Event] = []
 
+    if action == "sync_all":
+        service: CloudSyncService | None = getattr(
+            request.app.state,
+            "cloud_sync_service",
+            None,
+        )
+        if service is None:
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "message": "cloud sync service not available"},
+            )
+        try:
+            sync_result = await service.run(trigger="web_ui")
+        except CloudSyncInProgress:
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "message": "sync_already_running"},
+            )
+        engine: StateEngine | None = getattr(request.app.state, "state_engine", None)
+        settings_obj = _settings(request)
+        dashboard = build_dashboard(engine, settings_obj) if engine else None
+        return {
+            "ok": sync_result["ok"],
+            "message": (
+                "全部同步完成"
+                if sync_result["ok"]
+                else "同步完成，但部分来源失败"
+            ),
+            "action": action,
+            "events": sync_result["events"],
+            "dashboard": dashboard,
+            "sync_status": sync_result,
+        }
+
     if action in _SYSTEM_SYNC_ACTIONS:
         for scheduled_action in _SYSTEM_SYNC_ACTIONS[action]:
             events_to_publish.append(Event(
@@ -4238,6 +4273,9 @@ async def web_status(request: Request):
             "momo_sync_enabled": bool(getattr(settings, "momo_sync_enabled", False)),
             "obsidian_vault_configured": bool(getattr(settings, "obsidian_vault_path", "")),
             "database_url_type": db_type,
+            "cloud_sync_configured": bool(
+                str(getattr(settings, "cloud_sync_token", "")).strip()
+            ),
         }
 
     # Worker health — find latest worker heartbeat from recent events
@@ -4272,20 +4310,13 @@ async def web_status(request: Request):
             logger.exception("worker health check failed")
 
     # Sync health — read from state engine
-    sync_health: dict[str, Any] = {
-        "google_calendar": {"status": "unknown"},
-    }
+    sync_health: dict[str, Any] = {}
     if state_engine:
         try:
-            sync_state = state_engine._state.get("sync", {})
-            gcal_sync = sync_state.get("google_calendar", {})
-            if gcal_sync:
-                sync_health["google_calendar"] = {
-                    "status": gcal_sync.get("status", "unknown"),
-                    "last_sync": gcal_sync.get("last_sync_completed") or gcal_sync.get("last_sync"),
-                    "count": gcal_sync.get("count") or gcal_sync.get("block_count") or gcal_sync.get("item_count"),
-                    "error": gcal_sync.get("error", ""),
-                }
+            sync_health = build_dashboard(state_engine, settings).get(
+                "sync_health",
+                {},
+            )
         except Exception:
             pass
 

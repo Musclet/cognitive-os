@@ -49,7 +49,14 @@ function chaoxingSyncText(status: any): string {
     : ''
   const partial = status?.partial ? ' · partial' : ''
   const timeout = status?.timeout ? ' · timeout' : ''
-  return `超星作业：${state} · 拉取 ${count} 项${courseStats}${skipped}${mode}${partial}${timeout}${error}`
+  const refreshHint = new Set([
+    'chaoxing_state_file_missing',
+    'chaoxing_session_expired',
+    'chaoxing_auth_failed',
+  ]).has(status?.error_code)
+    ? ' · 请运行 python scripts/refresh_chaoxing_state.py 后更新云端状态'
+    : ''
+  return `超星作业：${state} · 拉取 ${count} 项${courseStats}${skipped}${mode}${partial}${timeout}${error}${refreshHint}`
 }
 
 function jwxtSyncText(status: any): string {
@@ -74,6 +81,22 @@ function jwxtSyncText(status: any): string {
     ? ' · 请运行 python scripts/refresh_jwxt_state.py 后重试'
     : ''
   return `教务课表：${state} · 拉取 ${pulledCount} 条 · 课程 ${blockCount} 条${error}${refreshHint}`
+}
+
+function cloudSyncText(status: any): string {
+  const labels: Record<string, string> = {
+    jwxt: '课表',
+    chaoxing: '作业',
+    google_calendar: '日历',
+  }
+  const sources = status?.sources || {}
+  const parts = Object.entries(sources).map(([source, value]: [string, any]) => {
+    const state = value?.status === 'completed'
+      ? '完成'
+      : `失败${value?.error_code ? `(${value.error_code})` : ''}`
+    return `${labels[source] || source} ${state} ${value?.count ?? 0}`
+  })
+  return parts.length ? parts.join(' · ') : '云同步未返回来源状态'
 }
 
 export function SystemPage({ onAction }: Props) {
@@ -184,6 +207,8 @@ export function SystemPage({ onAction }: Props) {
         ? chaoxingSyncText(syncStatus)
         : action === 'sync_schedule' && syncStatus
           ? jwxtSyncText(syncStatus)
+        : action === 'sync_all' && syncStatus
+          ? cloudSyncText(syncStatus)
         : `${res.message} · ${res.events} 个事件`
       setSystemStatus({ type: syncFailed || !res.ok ? 'err' : 'ok', text: statusText })
       load()
@@ -465,6 +490,12 @@ export function SystemPage({ onAction }: Props) {
             <span className="label">数据库类型</span>
             <span className="value">{webStatus.settings.database_url_type}</span>
           </div>
+          <div className="stat-row">
+            <span className="label">云同步</span>
+            <span className="value">
+              {webStatus.settings.cloud_sync_configured ? '已配置' : '未配置'}
+            </span>
+          </div>
           <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
             <div className="stat-row">
               <span className="label">超星 Mock</span>
@@ -501,7 +532,7 @@ export function SystemPage({ onAction }: Props) {
               <span className="value">{webStatus.settings.obsidian_vault_configured ? '已配置' : '未配置'}</span>
             </div>
           </div>
-          {webStatus.worker && (
+          {webStatus.worker && webStatus.worker.status !== 'missing' && (
             <div style={{ marginTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 10 }}>
               <div className="stat-row">
                 <span className="label">Worker 状态</span>

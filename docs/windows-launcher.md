@@ -1,7 +1,7 @@
 # Cognitive OS — Windows 一键启动器
 
-> **这不是生产部署方式。**
-> 这是 Windows 本地开发/自用启动器，用于快速打开 Web/PWA 图形界面。
+> Windows 快捷方式默认打开共享 Render 云端 Web/PWA。只有显式设置
+> `COGNITIVE_OS_LAUNCH_MODE=local` 时才启动本地开发服务。
 
 ---
 
@@ -36,16 +36,13 @@ powershell -ExecutionPolicy Bypass -File scripts\create_web_ui_shortcut.ps1
 
 双击桌面 **Cognitive OS**，启动器自动：
 
-1. 检查 Python 和 Node.js 是否可用
-2. 检查前端依赖是否已安装（`web/node_modules`）
-3. 启动后端（`python scripts/run.py`，端口 8081）
-4. 启动前端（`npm run dev`，端口 5173）
-5. 等待服务就绪
-6. 打开浏览器 → `http://localhost:5173/app/`
+1. 读取 `.env` 中的启动模式。
+2. 默认打开浏览器 → `https://cognitive-os.onrender.com/app/`。
+3. 不启动本地后端或前端，因此电脑和手机使用同一个云端数据库。
 
 ### 3. 登录
 
-默认本地 PIN：**123456**
+使用 Render 环境变量 `WEB_UI_PIN` 配置的 PIN。
 
 ---
 
@@ -55,6 +52,17 @@ powershell -ExecutionPolicy Bypass -File scripts\create_web_ui_shortcut.ps1
 python scripts/launch_web_ui.pyw
 ```
 
+## 本地开发模式
+
+在本地 `.env` 中设置：
+
+```text
+COGNITIVE_OS_LAUNCH_MODE=local
+```
+
+此时启动器才会检查 Node.js、启动 8081 后端和 5173 Vite 前端。
+开发结束后改回 `cloud`，避免桌面端产生一套独立于手机的本地状态。
+
 ---
 
 ## 停止服务
@@ -63,7 +71,7 @@ python scripts/launch_web_ui.pyw
 powershell -ExecutionPolicy Bypass -File scripts\stop_web_ui.ps1
 ```
 
-该脚本只停止由启动器启动的进程，不会影响系统中其他 Python/Node 进程。
+该脚本只用于本地开发模式，并且只停止由启动器启动的进程。
 
 ---
 
@@ -78,10 +86,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build_launcher_exe.ps1
 
 输出：`dist/CognitiveOSLauncher.exe`
 
-**注意：**
-- PyInstaller 打包不是必需的，`.pyw` 文件直接双击就可以用
-- 打包后的 exe 体积较大（~30MB），启动速度可能稍慢
-- 打包后仍需 Node.js 和 npm 在前端首次启动时可用
+**注意：**云端模式不需要 Node.js 或 npm；本地开发模式仍需要。
 
 ---
 
@@ -89,9 +94,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build_launcher_exe.ps1
 
 | 服务 | 地址 |
 |------|------|
-| Web UI | http://localhost:5173/ |
-| API 文档 | http://localhost:8081/docs |
-| FastAPI 端点 | http://localhost:8081/ |
+| 共享 Web UI | https://cognitive-os.onrender.com/app/ |
+| 本地开发 UI | http://localhost:5173/app/ |
+| 本地开发 API | http://localhost:8081/ |
 
 ---
 
@@ -117,7 +122,11 @@ logs/launcher/
 
 ## 常见问题
 
-### 端口被占用
+### 云端首次打开较慢
+
+Render 免费 Web 服务休眠后可能需要约一分钟唤醒，等待页面加载即可。
+
+### 本地开发端口被占用
 
 如果 8081 或 5173 已被占用：
 - 启动器会尝试复用已有服务
@@ -144,13 +153,13 @@ npm install
 
 ### 登录失败
 
-- 确认后端已启动（`curl http://localhost:8081/api/web/auth/check`）
-- 默认 PIN：`123456`
-- 检查 `.env` 中是否设置了 `WEB_UI_PIN`
+- 云端检查 Render 的 `WEB_UI_PIN`。
+- 本地开发检查 `.env` 中的 `WEB_UI_PIN` 和 8081 后端。
 
 ### 白屏 / 无法加载
 
-- 确认前端已启动（浏览器访问 `http://localhost:5173/`）
+- 云端确认 `https://cognitive-os.onrender.com/app/` 能打开。
+- 本地开发确认 `http://localhost:5173/app/` 能打开。
 - 按 F12 打开开发者工具，查看 Console 是否有错误信息
 - 尝试强制刷新（Ctrl + Shift + R）
 

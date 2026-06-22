@@ -1,17 +1,17 @@
 # Project Status
 
-Last audited: 2026-06-21
-Audit base: `ab61739`
-Working branch: `feature/google-calendar-real-write-setup`
+Last audited: 2026-06-22
+Audit base: `e0c51ed`
+Working branch: `feature/cloud-sync-neon`
 
 ## Verified Baseline
 
 | Check | Result |
 |---|---|
 | Python compile | PASS |
-| Python tests | `1107 passed, 156 warnings` |
-| Focused calendar/proposal/google tests | `159 passed, 948 deselected` |
-| Snapshot/replay determinism | PASS |
+| Python tests | `1145 passed, 161 warnings` |
+| Focused cloud sync/migration/Render tests | `33 passed, 3 warnings` |
+| Snapshot/replay determinism | `10 passed` |
 | Web TypeScript/Vite build | PASS |
 | Critical Ruff (`E9,F821` in `src scripts`) | FAIL: 5 pre-existing `course_registry` F821 findings in `scripts/run_step4_connector.py` |
 | Full Ruff | 228 pre-existing findings at audit start |
@@ -27,6 +27,23 @@ batch.
 
 ## Completed In This Branch
 
+- Added a token-protected internal cloud-sync endpoint with constant-time
+  authentication, single-run locking, fixed JWXT -> Chaoxing -> Google
+  Calendar ordering, isolated source failures, and sanitized result summaries.
+- Routed Web "sync all" through the same Pipeline-backed cloud-sync service so
+  mobile and scheduled refreshes share one execution path and refresh current
+  dashboard state immediately.
+- Replaced the ineffective free worker/persistent-disk blueprint with a Render
+  Cron job scheduled for `0 23 * * *` UTC and a cold-start-aware retry client.
+- Made Neon `DATABASE_URL` the documented production source of truth and
+  disabled Render admin file imports.
+- Added an idempotent SQLite-to-Postgres event migration tool with dry-run,
+  sequence/event-ID preservation, conflict checks, and a pre-apply SQLite
+  backup that does not print event payloads or database credentials.
+- Made the Windows shortcut open the shared Render app by default while
+  preserving an explicit local-development launch mode.
+- Added System-page cloud-sync configuration and per-source status/error
+  feedback without exposing authentication values.
 - Enabled local Google Calendar real-write setup while retaining explicit
   proposal acceptance, stable auth/write error codes, and non-interactive
   runtime authentication.
@@ -86,10 +103,12 @@ batch.
 
 ### P1 Next
 
-1. The Web route module still contains unreachable legacy dashboard, finance,
+1. Complete the external Neon/Render rollout and cellular-network acceptance
+   using deployment secrets that are intentionally absent from the repository.
+2. The Web route module still contains unreachable legacy dashboard, finance,
    and conflict implementations after the active paths moved to domain
    services.
-2. Some API routes still return untyped dictionaries.
+3. Some API routes still return untyped dictionaries.
 
 ### P2 Planned
 
@@ -103,6 +122,6 @@ batch.
 
 ## Next Safe Batch
 
-Remove the unreachable legacy dashboard, finance, and conflict implementations
-from `web_routes.py` as a behavior-neutral cleanup. Keep the active domain
-service paths unchanged and run the full Web/API regression suite.
+Provision Neon, set the documented Render environment variables, run the
+dry-run and apply migration, then validate Cron wake-up and phone refresh over
+a cellular connection. Do not weaken the Google Calendar proposal/Accept gate.

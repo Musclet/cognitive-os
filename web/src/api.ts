@@ -387,6 +387,15 @@ export interface SystemActionResponse {
     partial?: boolean;
     timeout?: boolean;
     last_sync_at?: string;
+    sources?: Record<string, {
+      status: string;
+      error_code?: string;
+      count?: number;
+      pulled_count?: number;
+      temporal_blocks_count?: number;
+      homework_count?: number;
+      last_sync_at?: string;
+    }>;
   } | null;
 }
 
@@ -405,6 +414,7 @@ export interface WebStatus {
     momo_sync_enabled: boolean;
     obsidian_vault_configured: boolean;
     database_url_type: string;
+    cloud_sync_configured: boolean;
   };
   worker?: {
     status: 'alive' | 'stale' | 'missing';

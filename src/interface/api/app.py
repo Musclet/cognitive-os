@@ -21,6 +21,8 @@ from src.core.safety import DeadLetterQueue
 from src.interface.api.workout_routes import router as workout_router
 from src.interface.api.web_routes import router as web_ui_router
 from src.interface.api.mobile_routes import router as mobile_router
+from src.interface.api.cloud_sync_routes import router as cloud_sync_router
+from src.services.cloud_sync import CloudSyncService
 
 
 logger = logging.getLogger(__name__)
@@ -132,6 +134,11 @@ def create_app(
     app.state.dead_letter = dead_letter
     app.state.scheduler = scheduler
     app.state.settings = settings
+    app.state.cloud_sync_service = (
+        CloudSyncService(pipeline, state_engine, settings)
+        if pipeline is not None and state_engine is not None and settings is not None
+        else None
+    )
 
     # ── Workout UI routes ────────────────────────────────────────────
     app.include_router(workout_router)
@@ -141,6 +148,9 @@ def create_app(
 
     # ── Mobile API routes ─────────────────────────────────────────────
     app.include_router(mobile_router)
+
+    # ── Internal cloud sync route ─────────────────────────────────────
+    app.include_router(cloud_sync_router)
 
     # ── Event endpoints ──────────────────────────────────────────────
 

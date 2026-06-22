@@ -7,13 +7,9 @@ services:
     buildCommand: pip install -e . && python -m playwright install chromium && cd web && npm install && npm run build && cd ..
     startCommand: python scripts/render_run.py
     plan: free
-    disk:
-      name: cognitive-os-data
-      mountPath: /var/data/cognitive-os
-      sizeGB: 1
     envVars:
       - key: DATA_DIR
-        value: /var/data/cognitive-os
+        value: /tmp/cognitive-os
       - key: DATABASE_URL
         sync: false
       - key: SNAPSHOT_PATH
@@ -45,9 +41,11 @@ services:
       - key: GOOGLE_CALENDAR_TIMEZONE
         value: "Asia/Shanghai"
       - key: RENDER_ADMIN_IMPORT_ENABLED
-        value: "true"
-      - key: RENDER_ADMIN_IMPORT_TOKEN
-        generateValue: true
+        value: "false"
+      - key: CLOUD_SYNC_TOKEN
+        sync: false
+      - key: CLOUD_SYNC_SOURCE_TIMEOUT_SECONDS
+        value: "180"
       - key: CHAOXING_MOCK
         value: "false"
       - key: CHAOXING_STATE_JSON
@@ -65,28 +63,19 @@ services:
       - key: SCHEDULE_SYNC_INTERVAL_HOURS
         value: "0"
 
-  - type: worker
-    name: cognitive-os-worker
+  - type: cron
+    name: cognitive-os-daily-sync
     runtime: python
     repo: https://github.com/Musclet/cognitive-os
     branch: master
-    buildCommand: pip install -e .
-    startCommand: python scripts/worker_run.py
-    plan: free
+    plan: starter
+    schedule: "0 23 * * *"
+    buildCommand: echo "standard-library cron client"
+    startCommand: python scripts/render_cloud_sync.py
     envVars:
-      - key: DATABASE_URL
+      - key: CLOUD_SYNC_URL
+        value: https://cognitive-os.onrender.com/api/internal/cloud-sync
+      - key: CLOUD_SYNC_TOKEN
         sync: false
-      - key: SNAPSHOT_PATH
-        value: data/state_snapshot.json
-      - key: GOOGLE_CALENDAR_MOCK
-        value: "false"
-      - key: GOOGLE_CALENDAR_SCHEDULE_WRITE_ENABLED
-        value: "false"
-      - key: CHAOXING_MOCK
-        value: "true"
-      - key: JWXT_MOCK
-        value: "false"
-      - key: JWXT_COOKIES_JSON
-        sync: false
-      - key: MOMO_SYNC_ENABLED
-        value: "false"
+      - key: CLOUD_SYNC_HTTP_TIMEOUT_SECONDS
+        value: "720"
