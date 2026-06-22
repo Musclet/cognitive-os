@@ -33,8 +33,9 @@ batch.
 - Routed Web "sync all" through the same Pipeline-backed cloud-sync service so
   mobile and scheduled refreshes share one execution path and refresh current
   dashboard state immediately.
-- Replaced the ineffective free worker/persistent-disk blueprint with a Render
-  Cron job scheduled for `0 23 * * *` UTC and a cold-start-aware retry client.
+- Replaced the ineffective free worker/persistent-disk blueprint with a
+  GitHub Actions schedule at `0 23 * * *` UTC and a cold-start-aware retry
+  client. This avoids requiring payment details for a Render Cron instance.
 - Made Neon `DATABASE_URL` the documented production source of truth and
   disabled Render admin file imports.
 - Added an idempotent SQLite-to-Postgres event migration tool with dry-run,

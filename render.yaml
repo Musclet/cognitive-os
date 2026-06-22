@@ -62,20 +62,3 @@ services:
         value: "07:00"
       - key: SCHEDULE_SYNC_INTERVAL_HOURS
         value: "0"
-
-  - type: cron
-    name: cognitive-os-daily-sync
-    runtime: python
-    repo: https://github.com/Musclet/cognitive-os
-    branch: master
-    plan: starter
-    schedule: "0 23 * * *"
-    buildCommand: echo "standard-library cron client"
-    startCommand: python scripts/render_cloud_sync.py
-    envVars:
-      - key: CLOUD_SYNC_URL
-        value: https://cognitive-os.onrender.com/api/internal/cloud-sync
-      - key: CLOUD_SYNC_TOKEN
-        sync: false
-      - key: CLOUD_SYNC_HTTP_TIMEOUT_SECONDS
-        value: "720"

@@ -407,19 +407,25 @@ class TestHealthCheckDataDir:
 
 
 class TestRenderBlueprint:
-    def test_blueprint_uses_free_web_neon_and_daily_cron(self):
+    def test_blueprint_uses_free_web_and_neon(self):
         blueprint = Path("render.yaml").read_text(encoding="utf-8")
 
         assert "type: worker" not in blueprint
         assert "\n    disk:" not in blueprint
-        assert "type: cron" in blueprint
-        assert "plan: starter" in blueprint
-        assert 'schedule: "0 23 * * *"' in blueprint
-        assert "python scripts/render_cloud_sync.py" in blueprint
-        assert 'value: "720"' in blueprint
+        assert "type: cron" not in blueprint
         assert "CLOUD_SYNC_TOKEN" in blueprint
         assert "RENDER_ADMIN_IMPORT_ENABLED" in blueprint
         assert 'value: "false"' in blueprint
+
+    def test_github_actions_runs_daily_cloud_sync(self):
+        workflow = Path(".github/workflows/cloud-sync.yml").read_text(
+            encoding="utf-8",
+        )
+
+        assert 'cron: "0 23 * * *"' in workflow
+        assert "workflow_dispatch:" in workflow
+        assert "python scripts/render_cloud_sync.py" in workflow
+        assert "${{ secrets.CLOUD_SYNC_TOKEN }}" in workflow
 
     def test_cloud_sync_settings_default_to_disabled_secret(self):
         settings = _settings()
