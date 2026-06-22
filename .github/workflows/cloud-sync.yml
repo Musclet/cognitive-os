@@ -26,4 +26,5 @@ jobs:
           CLOUD_SYNC_URL: https://cognitive-os.onrender.com/api/internal/cloud-sync
           CLOUD_SYNC_TOKEN: ${{ secrets.CLOUD_SYNC_TOKEN }}
           CLOUD_SYNC_HTTP_TIMEOUT_SECONDS: "720"
+          CLOUD_SYNC_SOURCES: google_calendar
         run: python scripts/render_cloud_sync.py

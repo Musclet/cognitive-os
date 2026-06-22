@@ -101,6 +101,11 @@ class ChaoxingConnector(Connector):
             "sync_timeout_seconds": self._sync_timeout_seconds,
         }
 
+    async def close(self) -> None:
+        """Release the local Playwright browser, if one was started."""
+        if self._browser is not None:
+            await self._browser.stop()
+
     async def authenticate(self) -> bool:
         """Validate that the state file exists (auth is via stored state)."""
         if self._use_mock:

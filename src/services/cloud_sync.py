@@ -11,6 +11,7 @@ from src.core.events import AggregateType, Event, EventType
 from src.core.pipeline import Pipeline
 from src.core.state_engine import StateEngine
 from src.infrastructure.config import Settings
+from src.storage.event_store import EventStore
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +40,22 @@ class CloudSyncService:
         self._settings = settings
         self._lock = asyncio.Lock()
 
-    async def run(self, *, trigger: str) -> dict[str, Any]:
+    async def run(
+        self,
+        *,
+        trigger: str,
+        sources: tuple[str, ...] | None = None,
+    ) -> dict[str, Any]:
         if self._lock.locked():
             raise CloudSyncInProgress("sync_already_running")
 
+        selected_sources = self._select_sources(sources)
         async with self._lock:
             started_at = datetime.now(timezone.utc)
             source_results: dict[str, dict[str, Any]] = {}
             total_events = 0
 
-            for source, query, aggregate_type in self._SOURCES:
+            for source, query, aggregate_type in selected_sources:
                 try:
                     result, event_count = await self._sync_source(
                         source=source,
@@ -91,6 +98,42 @@ class CloudSyncService:
                 "sources": source_results,
                 "events": total_events,
             }
+
+    async def refresh_from_event_store(
+        self,
+        event_store: EventStore,
+    ) -> dict[str, Any]:
+        """Apply events persisted by the local sync agent to live Web state."""
+        if self._lock.locked():
+            raise CloudSyncInProgress("sync_already_running")
+
+        async with self._lock:
+            before = self._state_engine.applied_count
+            events = await event_store.replay_all()
+            for event in events:
+                await self._state_engine.apply(event)
+            after = self._state_engine.applied_count
+            return {
+                "ok": True,
+                "status": "completed",
+                "event_store_count": len(events),
+                "new_events": max(after - before, 0),
+                "applied_count": after,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    @classmethod
+    def _select_sources(
+        cls,
+        sources: tuple[str, ...] | None,
+    ) -> tuple[tuple[str, str, AggregateType], ...]:
+        if sources is None:
+            return cls._SOURCES
+        requested = set(sources)
+        selected = tuple(item for item in cls._SOURCES if item[0] in requested)
+        if not selected or len(selected) != len(requested):
+            raise ValueError("invalid_cloud_sync_sources")
+        return selected
 
     async def _sync_source(
         self,

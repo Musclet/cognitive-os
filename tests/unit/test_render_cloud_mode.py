@@ -426,6 +426,7 @@ class TestRenderBlueprint:
         assert "workflow_dispatch:" in workflow
         assert "python scripts/render_cloud_sync.py" in workflow
         assert "${{ secrets.CLOUD_SYNC_TOKEN }}" in workflow
+        assert "CLOUD_SYNC_SOURCES: google_calendar" in workflow
 
     def test_cloud_sync_settings_default_to_disabled_secret(self):
         settings = _settings()
