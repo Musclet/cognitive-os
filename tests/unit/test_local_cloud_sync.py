@@ -44,3 +44,7 @@ def test_windows_task_scripts_use_dpapi_secret_files():
     assert "StartWhenAvailable" in installer
     assert "Import-Clixml" in runner
     assert "scripts\\local_cloud_sync.py" in runner
+    assert "Start-Process" in runner
+    assert "-RedirectStandardOutput" in runner
+    assert "-RedirectStandardError" in runner
+    assert "$syncExitCode = $process.ExitCode" in runner

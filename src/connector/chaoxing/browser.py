@@ -42,10 +42,15 @@ class ChaoxingBrowser:
         self._playwright = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
+        self._last_session_error_code = ""
 
     @property
     def state_path(self) -> Path:
         return self._state_path
+
+    @property
+    def last_session_error_code(self) -> str:
+        return self._last_session_error_code
 
     async def start(self) -> BrowserContext:
         """Launch browser and create context with stored auth state.
@@ -67,7 +72,7 @@ class ChaoxingBrowser:
         self._playwright = await async_playwright().start()
         launch_args = [
             "--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage",
-            "--disable-setuid-sandbox", "--single-process",
+            "--disable-setuid-sandbox",
         ]
         self._browser = await self._playwright.chromium.launch(
             headless=self._headless,
@@ -169,6 +174,7 @@ class ChaoxingBrowser:
         """
         if not self._context:
             return False
+        self._last_session_error_code = ""
         page: Page | None = None
         try:
             page = await self.new_page()
@@ -176,6 +182,7 @@ class ChaoxingBrowser:
             url = page.url
             # If redirected to passport, cookies expired
             if "passport" in url:
+                self._last_session_error_code = "chaoxing_session_expired"
                 logger.warning("[SESSION] expired — redirected to passport login")
                 return False
             # Check login success indicators
@@ -186,9 +193,11 @@ class ChaoxingBrowser:
                         return True
                 except Exception:
                     pass
+            self._last_session_error_code = "chaoxing_session_expired"
             logger.warning("[SESSION] no login indicators found — may be expired")
             return False
         except Exception as exc:
+            self._last_session_error_code = "chaoxing_browser_unavailable"
             logger.warning(
                 "[SESSION] check failed error_type=%s",
                 type(exc).__name__,

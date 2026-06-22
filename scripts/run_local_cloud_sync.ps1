@@ -35,8 +35,31 @@ try {
 
     Push-Location $ProjectRoot
     try {
-        & $pythonCandidates[0] "scripts\local_cloud_sync.py" *>> $LogPath
-        exit $LASTEXITCODE
+        $stdoutPath = Join-Path $LogDir "local-cloud-sync.stdout.tmp"
+        $stderrPath = Join-Path $LogDir "local-cloud-sync.stderr.tmp"
+        Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+        try {
+            $process = Start-Process `
+                -FilePath $pythonCandidates[0] `
+                -ArgumentList "scripts\local_cloud_sync.py" `
+                -WorkingDirectory $ProjectRoot `
+                -WindowStyle Hidden `
+                -Wait `
+                -PassThru `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath
+            $syncExitCode = $process.ExitCode
+        }
+        finally {
+            foreach ($outputPath in @($stdoutPath, $stderrPath)) {
+                if (Test-Path -LiteralPath $outputPath) {
+                    Get-Content -LiteralPath $outputPath |
+                        Out-File -LiteralPath $LogPath -Append -Encoding utf8
+                    Remove-Item -LiteralPath $outputPath -Force
+                }
+            }
+        }
+        exit $syncExitCode
     }
     finally {
         Pop-Location

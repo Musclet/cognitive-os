@@ -183,18 +183,31 @@ class ChaoxingConnector(Connector):
         if not self._session_expired:
             session_ok = await self._browser.check_session_valid()
             if not session_ok:
-                self._session_expired = True
-                logger.error(
-                    "[SESSION] Chaoxing session expired. Run login_and_save_state() "
-                    "to generate a fresh state file at: %s", self._state_file,
+                browser_error_code = getattr(
+                    self._browser,
+                    "last_session_error_code",
+                    "",
                 )
-                return {
-                    "source": self.source_name,
-                    "error_code": "chaoxing_session_expired",
-                    "error": CHAOXING_ERROR_MESSAGES["chaoxing_session_expired"],
-                    "session_expired": True,
-                    "mock_enabled": False,
-                }
+                error_code = (
+                    browser_error_code
+                    if isinstance(browser_error_code, str) and browser_error_code
+                    else "chaoxing_session_expired"
+                )
+                self._session_expired = error_code == "chaoxing_session_expired"
+                if self._session_expired:
+                    logger.error(
+                        "[SESSION] Chaoxing session expired. Run "
+                        "login_and_save_state() to generate a fresh state file "
+                        "at: %s",
+                        self._state_file,
+                    )
+                else:
+                    logger.error(
+                        "[SESSION] Chaoxing browser session check failed "
+                        "error_code=%s",
+                        error_code,
+                    )
+                return self._error_result(error_code)
         else:
             return {
                 "source": self.source_name,
