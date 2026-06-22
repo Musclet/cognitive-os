@@ -126,6 +126,11 @@ class StateEngine:
         self._compute_derived_if_dirty()
         return dict(self._derived)
 
+    @property
+    def applied_count(self) -> int:
+        """Number of unique events currently reflected in state."""
+        return self._applied_count
+
     # ── Hash ─────────────────────────────────────────────────────────────
 
     def state_hash(self) -> str:

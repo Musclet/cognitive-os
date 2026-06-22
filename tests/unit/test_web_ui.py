@@ -3252,19 +3252,17 @@ class TestSystemAction:
 
     def test_sync_all_uses_cloud_sync_service(self, client: TestClient, app: FastAPI):
         app.state.pipeline.run.reset_mock()
-        calls: list[str] = []
+        calls: list[tuple[str, tuple[str, ...]]] = []
 
-        async def run(*, trigger: str):
-            calls.append(trigger)
+        async def run(*, trigger: str, sources: tuple[str, ...]):
+            calls.append((trigger, sources))
             return {
                 "ok": True,
                 "status": "completed",
                 "sources": {
-                    "jwxt": {"status": "completed", "count": 3},
-                    "chaoxing": {"status": "completed", "count": 4},
                     "google_calendar": {"status": "completed", "count": 5},
                 },
-                "events": 12,
+                "events": 5,
             }
 
         app.state.cloud_sync_service = SimpleNamespace(run=run)
@@ -3278,7 +3276,7 @@ class TestSystemAction:
 
         assert resp.status_code == 200
         assert resp.json()["sync_status"]["status"] == "completed"
-        assert calls == ["web_ui"]
+        assert calls == [("web_ui", ("google_calendar",))]
         app.state.pipeline.run.assert_not_called()
 
     def test_calendar_review_publishes_review_requested(self, client: TestClient, app: FastAPI):

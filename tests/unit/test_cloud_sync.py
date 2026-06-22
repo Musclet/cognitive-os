@@ -67,6 +67,65 @@ async def test_cloud_sync_runs_sources_in_fixed_order():
 
 
 @pytest.mark.asyncio
+async def test_cloud_sync_runs_only_selected_sources_in_fixed_order():
+    calls: list[str] = []
+
+    async def run(event: Event):
+        source = str(event.payload["source"])
+        calls.append(source)
+        return [event, _completed(source)]
+
+    service = CloudSyncService(
+        SimpleNamespace(run=run),
+        StateEngine(),
+        Settings(_env_file=None, cloud_sync_source_timeout_seconds=1),
+    )
+
+    result = await service.run(
+        trigger="local",
+        sources=("jwxt", "chaoxing"),
+    )
+
+    assert calls == ["jwxt", "chaoxing"]
+    assert set(result["sources"]) == {"jwxt", "chaoxing"}
+
+
+@pytest.mark.asyncio
+async def test_cloud_sync_rejects_unknown_source():
+    service = CloudSyncService(
+        SimpleNamespace(run=AsyncMock()),
+        StateEngine(),
+        Settings(_env_file=None),
+    )
+
+    with pytest.raises(ValueError, match="invalid_cloud_sync_sources"):
+        await service.run(trigger="test", sources=("unknown",))
+
+
+@pytest.mark.asyncio
+async def test_cloud_state_refresh_applies_only_new_events():
+    state_engine = StateEngine()
+    existing = _completed("google_calendar", 1)
+    new_event = _completed("jwxt", 2)
+    await state_engine.apply(existing)
+    store = SimpleNamespace(
+        replay_all=AsyncMock(return_value=[existing, new_event]),
+    )
+    service = CloudSyncService(
+        SimpleNamespace(run=AsyncMock()),
+        state_engine,
+        Settings(_env_file=None),
+    )
+
+    result = await service.refresh_from_event_store(store)
+
+    assert result["ok"] is True
+    assert result["event_store_count"] == 2
+    assert result["new_events"] == 1
+    assert state_engine.applied_count == 2
+
+
+@pytest.mark.asyncio
 async def test_cloud_sync_continues_after_one_source_fails():
     calls: list[str] = []
 
@@ -160,6 +219,7 @@ def _route_client(service, token: str = "cloud-secret") -> TestClient:
     app.include_router(router)
     app.state.settings = SimpleNamespace(cloud_sync_token=token)
     app.state.cloud_sync_service = service
+    app.state.event_store = SimpleNamespace()
     return TestClient(app)
 
 
@@ -201,8 +261,53 @@ def test_cloud_sync_endpoint_runs_with_correct_token():
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    service.run.assert_awaited_once_with(trigger="render_cron")
+    service.run.assert_awaited_once_with(
+        trigger="remote_scheduler",
+        sources=("google_calendar",),
+    )
     assert "cloud-secret" not in response.text
+
+
+def test_cloud_sync_endpoint_accepts_explicit_sources():
+    service = SimpleNamespace(run=AsyncMock(return_value={
+        "ok": True,
+        "status": "completed",
+        "sources": {},
+        "events": 1,
+    }))
+    client = _route_client(service)
+
+    response = client.post(
+        "/api/internal/cloud-sync",
+        headers={"X-Cloud-Sync-Token": "cloud-secret"},
+        json={"sources": ["jwxt"]},
+    )
+
+    assert response.status_code == 200
+    service.run.assert_awaited_once_with(
+        trigger="remote_scheduler",
+        sources=("jwxt",),
+    )
+
+
+def test_cloud_state_refresh_endpoint_uses_same_authentication():
+    service = SimpleNamespace(
+        refresh_from_event_store=AsyncMock(return_value={
+            "ok": True,
+            "status": "completed",
+            "new_events": 4,
+        }),
+    )
+    client = _route_client(service)
+
+    response = client.post(
+        "/api/internal/cloud-state-refresh",
+        headers={"X-Cloud-Sync-Token": "cloud-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["new_events"] == 4
+    service.refresh_from_event_store.assert_awaited_once()
 
 
 def test_cloud_sync_endpoint_returns_409_when_busy():

@@ -5,8 +5,11 @@ same data:
 
 - Render free Web service: React/PWA + FastAPI + connector runtime.
 - Neon Postgres: durable event log and the production source of truth.
-- GitHub Actions: wakes the Web service and requests one sync every day at
-  07:00 China time.
+- GitHub Actions: wakes the Web service and refreshes Google Calendar every
+  day at 07:00 China time.
+- Windows local sync agent: refreshes JWXT and Chaoxing from the domestic
+  network, writes their normal Pipeline events to Neon, then tells Render to
+  absorb the new events immediately.
 
 The free Render filesystem is ephemeral. It is used only to materialize
 credential JSON from environment variables for the current process.
@@ -95,12 +98,51 @@ POST /api/internal/cloud-sync
 X-Cloud-Sync-Token: <secret>
 ```
 
-The endpoint runs JWXT, Chaoxing, and Google Calendar sequentially through
-the normal EventBus/Pipeline. A partial failure does not discard the other
-successful sources, but the workflow exits non-zero so GitHub marks the run as
-failed.
+The scheduled endpoint runs Google Calendar through the normal
+EventBus/Pipeline. JWXT and Chaoxing are intentionally excluded from the
+overseas Render runtime.
 
-## 4. Refresh expired authentication
+## 4. Windows local JWXT and Chaoxing sync
+
+The local agent uses the existing connectors and Pipeline, but points its
+EventStore at Neon:
+
+```text
+scripts/local_cloud_sync.py
+```
+
+Install its DPAPI-protected credentials and the daily 07:00 task:
+
+```powershell
+powershell -ExecutionPolicy Bypass `
+  -File scripts/install_local_cloud_sync_task.ps1
+```
+
+The installer asks for the Neon PostgreSQL URL and `CLOUD_SYNC_TOKEN`. They
+are encrypted for the current Windows user under
+`%LOCALAPPDATA%\CognitiveOS\cloud-sync`; they are not written to the
+repository or `.env`.
+
+Run it immediately:
+
+```powershell
+Start-ScheduledTask -TaskName "Cognitive OS Local Cloud Sync"
+```
+
+The task:
+
+1. synchronizes JWXT;
+2. synchronizes Chaoxing;
+3. writes the resulting immutable events to Neon;
+4. calls `POST /api/internal/cloud-state-refresh`;
+5. causes the active phone/Web UI to see the new state without a Render
+   restart.
+
+If Windows was asleep at 07:00, Task Scheduler runs it when the machine next
+becomes available. The task uses an interactive user principal so that its
+DPAPI secrets can only be decrypted by the same Windows account.
+
+## 5. Refresh expired authentication
 
 Authentication refresh remains local:
 
@@ -113,7 +155,7 @@ python scripts/google_calendar_login.py
 After refresh, update the corresponding JSON environment variable in Render
 and redeploy. Never commit or paste these values into logs or issues.
 
-## 5. Phone and desktop access
+## 6. Phone and desktop access
 
 Use the same URL everywhere:
 
@@ -131,12 +173,14 @@ COGNITIVE_OS_LAUNCH_MODE=local
 The free Web service may need roughly one minute to wake after inactivity.
 The daily Actions workflow still wakes it independently at 07:00.
 
-## 6. Acceptance checks
+## 7. Acceptance checks
 
 1. Open the Web URL over phone cellular data and log in.
 2. On System, confirm database type is `postgresql` and cloud sync is
    configured.
 3. Click “全部刷新”; verify explicit status for课表、作业、日历.
 4. Confirm Tasks and Time update without opening the local computer.
-5. In GitHub Actions, confirm one daily cloud-sync run at 23:00 UTC.
-6. Confirm Google Calendar external writes still require Accept.
+5. In GitHub Actions, confirm one daily Google Calendar run at 23:00 UTC.
+6. In Windows Task Scheduler, confirm the local task runs at 07:00 and exits
+   with result `0`.
+7. Confirm Google Calendar external writes still require Accept.

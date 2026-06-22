@@ -2919,7 +2919,10 @@ async def web_system_action(request: Request, body: dict):
                 content={"ok": False, "message": "cloud sync service not available"},
             )
         try:
-            sync_result = await service.run(trigger="web_ui")
+            sync_result = await service.run(
+                trigger="web_ui",
+                sources=("google_calendar",),
+            )
         except CloudSyncInProgress:
             return JSONResponse(
                 status_code=409,
@@ -2931,9 +2934,9 @@ async def web_system_action(request: Request, body: dict):
         return {
             "ok": sync_result["ok"],
             "message": (
-                "全部同步完成"
+                "云端日历同步完成；课表与作业由本地同步代理更新"
                 if sync_result["ok"]
-                else "同步完成，但部分来源失败"
+                else "云端日历同步失败"
             ),
             "action": action,
             "events": sync_result["events"],

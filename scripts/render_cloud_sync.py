@@ -14,10 +14,15 @@ DEFAULT_URL = "https://cognitive-os.onrender.com/api/internal/cloud-sync"
 RETRY_DELAYS = (0, 15, 30)
 
 
-def _request_sync(url: str, token: str, timeout: int) -> tuple[int, dict]:
+def _request_sync(
+    url: str,
+    token: str,
+    timeout: int,
+    sources: list[str],
+) -> tuple[int, dict]:
     request = urllib.request.Request(
         url,
-        data=b"{}",
+        data=json.dumps({"sources": sources}).encode("utf-8"),
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -60,8 +65,16 @@ def main() -> int:
     url = os.environ.get("CLOUD_SYNC_URL", DEFAULT_URL).strip()
     token = os.environ.get("CLOUD_SYNC_TOKEN", "").strip()
     timeout = max(30, int(os.environ.get("CLOUD_SYNC_HTTP_TIMEOUT_SECONDS", "720")))
+    sources = [
+        source.strip()
+        for source in os.environ.get(
+            "CLOUD_SYNC_SOURCES",
+            "google_calendar",
+        ).split(",")
+        if source.strip()
+    ]
 
-    if not token:
+    if not token or not sources:
         print("cloud_sync_error=missing_cloud_sync_token")
         return 2
 
@@ -69,7 +82,12 @@ def main() -> int:
         if delay:
             time.sleep(delay)
         try:
-            status_code, payload = _request_sync(url, token, timeout)
+            status_code, payload = _request_sync(
+                url,
+                token,
+                timeout,
+                sources,
+            )
         except (OSError, TimeoutError, json.JSONDecodeError) as exc:
             print(
                 "cloud_sync_attempt=%d result=network_error error_type=%s"

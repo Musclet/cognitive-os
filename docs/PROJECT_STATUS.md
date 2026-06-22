@@ -36,6 +36,10 @@ batch.
 - Replaced the ineffective free worker/persistent-disk blueprint with a
   GitHub Actions schedule at `0 23 * * *` UTC and a cold-start-aware retry
   client. This avoids requiring payment details for a Render Cron instance.
+- Moved JWXT and Chaoxing production reads to a Windows local sync agent that
+  writes normal Pipeline events directly to Neon and asks Render to absorb
+  newly persisted events without restarting. Secrets are stored with Windows
+  DPAPI and the task runs daily at 07:00.
 - Made Neon `DATABASE_URL` the documented production source of truth and
   disabled Render admin file imports.
 - Added an idempotent SQLite-to-Postgres event migration tool with dry-run,

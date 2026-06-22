@@ -45,7 +45,10 @@ be handled separately from behavior changes.
 
 Render uses `scripts/render_run.py` and `render.yaml`. Neon Postgres is the
 shared production source of truth, and GitHub Actions calls the protected cloud
-sync endpoint every day at 07:00 China time. See
+sync endpoint for Google Calendar every day at 07:00 China time. JWXT and
+Chaoxing run through the local Windows sync agent because the school service
+and Chromium automation are not reliable from Render's overseas free runtime.
+See
 [`docs/render-cloud-mode.md`](docs/render-cloud-mode.md).
 
 Automated Google Calendar schedule writes are disabled in the blueprint until
