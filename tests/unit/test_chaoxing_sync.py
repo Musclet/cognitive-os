@@ -90,6 +90,32 @@ async def test_real_sync_invalid_state_reports_session_expired(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_real_sync_session_browser_failure_is_not_reported_as_expired(
+    tmp_path,
+):
+    state_file = tmp_path / "state.json"
+    state_file.write_text(SENTINEL, encoding="utf-8")
+    connector = ChaoxingConnector(use_mock=False, state_file=str(state_file))
+    browser = AsyncMock()
+    browser.start.return_value = None
+    browser.check_session_valid.return_value = False
+    browser.last_session_error_code = "chaoxing_browser_unavailable"
+    connector._browser = browser
+    connector._authenticated = True
+
+    events = await connector.handle_fetch_request(_fetch_event())
+
+    failed = next(
+        event
+        for event in events
+        if event.event_type == EventType.CONNECTOR_FETCH_FAILED
+    )
+    assert failed.payload["error_code"] == "chaoxing_browser_unavailable"
+    assert connector.stats["session_expired"] is False
+    _assert_no_sensitive_text(failed.payload)
+
+
+@pytest.mark.asyncio
 async def test_real_sync_playwright_import_missing_is_sanitized(
     tmp_path,
     monkeypatch,
