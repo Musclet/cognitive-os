@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -3249,9 +3250,24 @@ class TestSystemAction:
         assert status["partial"] is True
         assert status["timeout"] is True
 
-    def test_sync_all_publishes_all_refresh_triggers(self, client: TestClient, app: FastAPI):
+    def test_sync_all_uses_cloud_sync_service(self, client: TestClient, app: FastAPI):
         app.state.pipeline.run.reset_mock()
-        app.state.pipeline.run.return_value = []
+        calls: list[str] = []
+
+        async def run(*, trigger: str):
+            calls.append(trigger)
+            return {
+                "ok": True,
+                "status": "completed",
+                "sources": {
+                    "jwxt": {"status": "completed", "count": 3},
+                    "chaoxing": {"status": "completed", "count": 4},
+                    "google_calendar": {"status": "completed", "count": 5},
+                },
+                "events": 12,
+            }
+
+        app.state.cloud_sync_service = SimpleNamespace(run=run)
         cookie = self._login(client)
 
         resp = client.post(
@@ -3261,11 +3277,9 @@ class TestSystemAction:
         )
 
         assert resp.status_code == 200
-        assert app.state.pipeline.run.call_count == 4
-        events = [call.args[0] for call in app.state.pipeline.run.call_args_list]
-        assert {event.payload["action"] for event in events} == {
-            "check_homework", "schedule_daily_sync", "calendar_sync", "momo_vocab_sync",
-        }
+        assert resp.json()["sync_status"]["status"] == "completed"
+        assert calls == ["web_ui"]
+        app.state.pipeline.run.assert_not_called()
 
     def test_calendar_review_publishes_review_requested(self, client: TestClient, app: FastAPI):
         app.state.pipeline.run.reset_mock()

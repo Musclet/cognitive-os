@@ -29,7 +29,14 @@ RuntimeMode = Literal["local", "render", "worker"]
 
 MODE_CAPABILITIES: dict[RuntimeMode, frozenset[str]] = {
     "local": frozenset({"core", "api", "telegram", "scheduler", "watchdog"}),
-    "render": frozenset({"core", "api", "google_calendar_read", "jwxt_read", "heartbeat"}),
+    "render": frozenset({
+        "core",
+        "api",
+        "google_calendar_read",
+        "jwxt_read",
+        "chaoxing_read",
+        "cloud_sync",
+    }),
     "worker": frozenset({"core", "heartbeat"}),
 }
 

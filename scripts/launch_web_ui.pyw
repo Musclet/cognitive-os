@@ -1,10 +1,10 @@
-"""Cognitive OS — Windows one-click Web UI launcher.
+"""Cognitive OS — Windows one-click cloud UI launcher.
 
 Usage:
     pythonw scripts/launch_web_ui.pyw
 
-Double-click the .pyw file (or a shortcut pointing to it) to start
-the backend, frontend, and open the browser automatically.
+By default the shortcut opens the shared cloud UI. Set
+``COGNITIVE_OS_LAUNCH_MODE=local`` for local development.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ WEB_DIR = PROJECT_ROOT / "web"
 LOGS_DIR = PROJECT_ROOT / "logs" / "launcher"
 RUNTIME_DIR = PROJECT_ROOT / ".runtime"
 PIDS_FILE = RUNTIME_DIR / "launcher-pids.json"
+DEFAULT_CLOUD_URL = "https://cognitive-os.onrender.com/app/"
 
 # ── Logging ────────────────────────────────────────────────────────────
 
@@ -193,6 +194,25 @@ def _show_message_box(title: str, message: str) -> None:
         pass
 
 
+def _launcher_setting(name: str, default: str) -> str:
+    value = os.environ.get(name)
+    if value is not None:
+        return value.strip()
+    env_path = PROJECT_ROOT / ".env"
+    if env_path.is_file():
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, raw_value = stripped.split("=", 1)
+                if key.strip() == name:
+                    return raw_value.strip().strip("\"'")
+        except OSError:
+            pass
+    return default
+
+
 def _read_pids() -> dict[str, int]:
     """Read previously launched PIDs from the runtime file."""
     if PIDS_FILE.exists():
@@ -291,6 +311,13 @@ def main() -> None:
     logger.info("Cognitive OS Launcher")
     logger.info("Project root: %s", PROJECT_ROOT)
     logger.info("=" * 50)
+
+    launch_mode = _launcher_setting("COGNITIVE_OS_LAUNCH_MODE", "cloud").lower()
+    if launch_mode != "local":
+        url = _launcher_setting("COGNITIVE_OS_CLOUD_URL", DEFAULT_CLOUD_URL)
+        logger.info("Opening shared cloud UI: %s", url)
+        webbrowser.open(url)
+        return
 
     # 1. Check prerequisites
     python_exe = _check_python()

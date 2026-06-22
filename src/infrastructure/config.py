@@ -129,6 +129,8 @@ class Settings(BaseSettings):
     data_dir: str = "data"
     render_admin_import_enabled: bool = False
     render_admin_import_token: str = ""
+    cloud_sync_token: str = ""
+    cloud_sync_source_timeout_seconds: int = 180
 
     def ensure_dirs(self) -> None:
         Path(self.data_dir).mkdir(parents=True, exist_ok=True)

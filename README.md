@@ -43,9 +43,10 @@ be handled separately from behavior changes.
 
 ## Deployment
 
-Render uses `scripts/render_run.py` and `render.yaml`. The Render composition is
-currently smaller than the local runtime. See `docs/PROJECT_STATUS.md` before
-assuming a local feature is active in production.
+Render uses `scripts/render_run.py` and `render.yaml`. Neon Postgres is the
+shared production source of truth, and Render Cron calls the protected cloud
+sync endpoint every day at 07:00 China time. See
+[`docs/render-cloud-mode.md`](docs/render-cloud-mode.md).
 
 Automated Google Calendar schedule writes are disabled in the blueprint until
 the batch-write path is moved behind the accepted-proposal execution contract.
