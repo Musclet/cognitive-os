@@ -44,7 +44,7 @@ be handled separately from behavior changes.
 ## Deployment
 
 Render uses `scripts/render_run.py` and `render.yaml`. Neon Postgres is the
-shared production source of truth, and Render Cron calls the protected cloud
+shared production source of truth, and GitHub Actions calls the protected cloud
 sync endpoint every day at 07:00 China time. See
 [`docs/render-cloud-mode.md`](docs/render-cloud-mode.md).
 

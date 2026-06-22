@@ -5,7 +5,7 @@ same data:
 
 - Render free Web service: React/PWA + FastAPI + connector runtime.
 - Neon Postgres: durable event log and the production source of truth.
-- Render Cron: wakes the Web service and requests one sync every day at
+- GitHub Actions: wakes the Web service and requests one sync every day at
   07:00 China time.
 
 The free Render filesystem is ephemeral. It is used only to materialize
@@ -76,17 +76,17 @@ CLOUD_SYNC_SOURCE_TIMEOUT_SECONDS=180
 Google Calendar writes still require an accepted proposal. The cloud sync
 only performs connector reads.
 
-## 3. Render Cron
+## 3. Daily GitHub Actions sync
 
-`render.yaml` defines `cognitive-os-daily-sync` with:
+`.github/workflows/cloud-sync.yml` defines:
 
 ```text
-plan: starter
 schedule: 0 23 * * *
 ```
 
-Render Cron uses UTC, so 23:00 UTC is 07:00 the next day in China.
-Render bills Cron execution time with a minimum charge of USD 1 per month.
+GitHub Actions schedules use UTC, so 23:00 UTC is 07:00 the next day in China.
+Set the repository Actions secret `CLOUD_SYNC_TOKEN` to the same value used by
+the Render Web service.
 
 The Cron command calls:
 
@@ -97,7 +97,7 @@ X-Cloud-Sync-Token: <secret>
 
 The endpoint runs JWXT, Chaoxing, and Google Calendar sequentially through
 the normal EventBus/Pipeline. A partial failure does not discard the other
-successful sources, but the Cron exits non-zero so Render marks the run as
+successful sources, but the workflow exits non-zero so GitHub marks the run as
 failed.
 
 ## 4. Refresh expired authentication
@@ -129,7 +129,7 @@ COGNITIVE_OS_LAUNCH_MODE=local
 ```
 
 The free Web service may need roughly one minute to wake after inactivity.
-The daily Cron still wakes it independently at 07:00.
+The daily Actions workflow still wakes it independently at 07:00.
 
 ## 6. Acceptance checks
 
@@ -138,5 +138,5 @@ The daily Cron still wakes it independently at 07:00.
    configured.
 3. Click “全部刷新”; verify explicit status for课表、作业、日历.
 4. Confirm Tasks and Time update without opening the local computer.
-5. In Render Cron history, confirm one daily run at 23:00 UTC.
+5. In GitHub Actions, confirm one daily cloud-sync run at 23:00 UTC.
 6. Confirm Google Calendar external writes still require Accept.
